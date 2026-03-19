@@ -29,6 +29,30 @@ if _apply:
         st.session_state[_k] = _v
 
 st.set_page_config(page_title="新建回测", page_icon="🚀", layout="wide")
+st.markdown("""
+<style>
+div[data-testid="stAppViewContainer"] > div:first-child { padding-top: 3.2rem; }
+.fixed-nav {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 999;
+    background: linear-gradient(135deg, #1f77b4 0%, #2196F3 100%);
+    display: flex; justify-content: center; gap: 0; padding: 0;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+}
+.fixed-nav a {
+    color: rgba(255,255,255,0.85); text-decoration: none;
+    padding: 0.65rem 2rem; font-size: 0.95rem; font-weight: 500;
+    transition: all 0.2s; border-bottom: 3px solid transparent;
+}
+.fixed-nav a:hover { color: #fff; background: rgba(255,255,255,0.1); }
+.fixed-nav a.active { color: #fff; border-bottom: 3px solid #fff; background: rgba(255,255,255,0.15); }
+</style>
+<div class="fixed-nav">
+    <a href="/" target="_self">🏠 首页</a>
+    <a href="/新建回测" target="_self" class="active">🚀 新建回测</a>
+    <a href="/查看结果" target="_self">📊 查看结果</a>
+    <a href="/历史记录" target="_self">📚 历史记录</a>
+</div>
+""", unsafe_allow_html=True)
 st.header("🚀 新建回测")
 
 # ============================================================
@@ -259,6 +283,15 @@ data_adjust = st.sidebar.selectbox(
 
 # 阶段二参数
 st.sidebar.subheader("⚙️ 筛选阈值")
+phase3_mode = st.sidebar.radio(
+    "阶段三优化目标", ["自动（夏普最高）", "手动选择"],
+    horizontal=True, key="_sb_phase3_mode",
+    help=(
+        "**自动**：一键完成全部三阶段，自动对夏普比率最高的策略进行参数优化。\n\n"
+        "**手动选择**：先完成阶段一、二，然后从所有候选策略中自选一个进行阶段三参数优化。"
+        "适合你对某个特定策略感兴趣，而非仅看夏普排名。"
+    ),
+)
 phase2_top_n = st.sidebar.slider(
     "阶段二: 取TOP N组合", 3, 20, 10, key="_sb_phase2_top_n",
     help=(
@@ -645,8 +678,11 @@ def _fetch_index_df(symbol, start_str, end_str, start_dt, end_dt,
 # ============================================================
 # 回测执行函数
 # ============================================================
-def run_full_backtest(etf_df, benchmark_df, progress_bar, status_text):
-    """运行完整三阶段回测，返回所有结果"""
+def run_full_backtest(etf_df, benchmark_df, progress_bar, status_text,
+                      phase3_override=None):
+    """运行完整三阶段回测，返回所有结果。
+    phase3_override: 若非 None，用此策略名替代自动选择的最优策略进行阶段三。
+    """
     from indicators import get_all_indicators
     from engine.backtester import run_single_backtest, run_combination_backtest
     from engine.metrics import (
@@ -731,7 +767,28 @@ def run_full_backtest(etf_df, benchmark_df, progress_bar, status_text):
     best_name = ""
     best_logic = ""
     combo_info = None
-    if not phase2_df.empty:
+
+    # __SKIP__ 表示手动模式下只需阶段一二
+    if phase3_override == "__SKIP__":
+        results["phase3_df"] = pd.DataFrame()
+        results["best_name"] = ""
+        results["best_logic"] = ""
+        progress_bar.progress(100)
+        status_text.text("阶段一 & 二完成！请选择策略继续阶段三。")
+        return results
+
+    if phase3_override and phase3_override != "__SKIP__":
+        # 手动指定的策略
+        # phase3_override 格式: "名称" 或 "组合名 [AND]" / "组合名 [OR]"
+        if " [AND]" in phase3_override:
+            best_name = phase3_override.replace(" [AND]", "")
+            best_logic = "AND"
+        elif " [OR]" in phase3_override:
+            best_name = phase3_override.replace(" [OR]", "")
+            best_logic = "OR"
+        else:
+            best_name = phase3_override
+    elif not phase2_df.empty:
         best_row = phase2_df.iloc[0]
         best_name = best_row.get("指标组合", best_row.get("指标名称", ""))
         best_logic = best_row.get("逻辑", "")
@@ -789,6 +846,115 @@ def run_full_backtest(etf_df, benchmark_df, progress_bar, status_text):
 
 
 # ============================================================
+# 结果展示函数
+# ============================================================
+def _show_backtest_results(results, benchmark_df):
+    """展示回测结果（阶段一/二/三 + 最优策略）"""
+    st.markdown("---")
+
+    # 阶段一
+    st.subheader("阶段一：单指标测试结果")
+    phase1_df = results.get("phase1_df", pd.DataFrame())
+    if not phase1_df.empty:
+        fig = px.scatter(
+            phase1_df, x="最大回撤", y="夏普比率",
+            text="指标名称", color="夏普比率",
+            color_continuous_scale="RdYlGn",
+            title="单指标: 夏普比率 vs 最大回撤",
+            hover_data=["年化收益率", "胜率", "交易次数"],
+        )
+        fig.update_traces(textposition="top center", textfont_size=8)
+        fig.update_layout(height=500)
+        st.plotly_chart(fig, use_container_width=True)
+
+        display_cols = ["指标名称", "年化收益率", "最大回撤", "夏普比率",
+                       "胜率", "盈亏比", "交易次数", "年化波动率"]
+        avail_cols = [c for c in display_cols if c in phase1_df.columns]
+        st.dataframe(phase1_df[avail_cols].head(20), use_container_width=True, hide_index=True)
+
+    # 阶段二
+    st.subheader("阶段二：组合策略测试结果")
+    phase2_df = results.get("phase2_df", pd.DataFrame())
+    if not phase2_df.empty:
+        display_cols = ["指标组合", "逻辑", "年化收益率", "最大回撤", "夏普比率",
+                       "胜率", "盈亏比", "交易次数"]
+        avail_cols = [c for c in display_cols if c in phase2_df.columns]
+        st.dataframe(phase2_df[avail_cols].head(20), use_container_width=True, hide_index=True)
+
+    # 最优策略
+    best_name = results.get("best_name", "")
+    if best_name and "best_core" in results:
+        st.subheader(f"最优策略: {best_name}")
+        core = results["best_core"]
+
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1.metric("年化收益", f"{core.get('年化收益率', 0):.2f}%")
+        c2.metric("夏普比率", f"{core.get('夏普比率', 0):.3f}")
+        c3.metric("最大回撤", f"{core.get('最大回撤', 0):.2f}%")
+        c4.metric("胜率", f"{core.get('胜率', 0):.1f}%")
+        c5.metric("交易次数", f"{core.get('交易次数', 0)}")
+        c6.metric("盈亏比", f"{core.get('盈亏比', 0):.2f}")
+
+        # 收益曲线
+        equity = results.get("best_equity")
+        if equity is not None and benchmark_df is not None:
+            bench_close = benchmark_df["close"]
+            strat_norm = equity / equity.iloc[0] * 100
+            bench_norm = bench_close / bench_close.iloc[0] * 100
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=strat_norm.index, y=strat_norm.values,
+                name=f"策略: {best_name}", line=dict(color="#1f77b4", width=2),
+            ))
+            fig.add_trace(go.Scatter(
+                x=bench_norm.index, y=bench_norm.values,
+                name="基准", line=dict(color="#ff7f0e", width=1.5, dash="dash"),
+            ))
+            fig.update_layout(title="收益曲线对比", yaxis_title="净值 (起始=100)",
+                               height=450, hovermode="x unified")
+            st.plotly_chart(fig, use_container_width=True)
+
+        # 月度收益热力图
+        monthly = results.get("best_monthly")
+        if monthly is not None and not monthly.empty:
+            plot_data = monthly.drop(columns=["全年"], errors="ignore") * 100
+            fig = px.imshow(
+                plot_data, text_auto=".1f",
+                color_continuous_scale="RdYlGn", color_continuous_midpoint=0,
+                title="月度收益热力图 (%)",
+                labels=dict(x="月份", y="年份", color="收益率(%)"),
+            )
+            fig.update_layout(height=300)
+            st.plotly_chart(fig, use_container_width=True)
+
+        # 交易记录
+        trade_log = results.get("best_trade_log")
+        if trade_log is not None and not trade_log.empty:
+            st.markdown("**交易记录**")
+            st.dataframe(trade_log, use_container_width=True, hide_index=True)
+
+    # 阶段三
+    phase3_df = results.get("phase3_df", pd.DataFrame())
+    if not phase3_df.empty:
+        st.subheader("阶段三：参数敏感性")
+        metric_cols = {"指标名称", "总收益率", "年化收益率", "最大回撤", "年化波动率",
+                      "夏普比率", "卡玛比率", "索提诺比率", "胜率", "盈亏比",
+                      "交易次数", "平均持仓天数", "年化交易频率"}
+        param_cols = [c for c in phase3_df.columns if c not in metric_cols]
+        if param_cols:
+            fig = px.scatter(
+                phase3_df, x=param_cols[0], y="夏普比率",
+                color="年化收益率", size="交易次数",
+                color_continuous_scale="RdYlGn",
+                title=f"参数敏感性: {param_cols[0]} vs 夏普比率",
+                hover_data=["年化收益率", "最大回撤", "交易次数"],
+            )
+            fig.update_layout(height=450)
+            st.plotly_chart(fig, use_container_width=True)
+        st.dataframe(phase3_df.head(30), use_container_width=True, hide_index=True)
+
+
+# ============================================================
 # 主界面
 # ============================================================
 st.markdown("### 参数预览")
@@ -801,7 +967,10 @@ col4.metric("数据频率", {"daily": "日线", "weekly": "周线"}[data_freq])
 st.markdown("---")
 
 # 运行按钮
-if st.button("🚀 开始回测", type="primary", use_container_width=True):
+_is_manual_phase3 = (phase3_mode == "手动选择")
+
+def _run_and_save(phase3_override=None):
+    """执行回测流程并保存结果到数据库"""
     start_time = time.time()
 
     # 创建数据库记录
@@ -841,7 +1010,8 @@ if st.button("🚀 开始回测", type="primary", use_container_width=True):
         st.info(f"数据加载完成: {mode_label} {len(etf_df)} 条 | 基准 {len(benchmark_df)} 条")
 
         # 执行回测
-        results = run_full_backtest(etf_df, benchmark_df, progress_bar, status_text)
+        results = run_full_backtest(etf_df, benchmark_df, progress_bar, status_text,
+                                    phase3_override=phase3_override)
 
         elapsed = time.time() - start_time
 
@@ -857,120 +1027,73 @@ if st.button("🚀 开始回测", type="primary", use_container_width=True):
                 results["best_core"], results.get("best_aux", {}),
                 bench_m,
                 results.get("best_monthly"), results.get("best_trade_log"),
+                results.get("best_equity"),
             )
         storage.update_run_status(run_id, "completed", elapsed)
 
         st.success(f"✅ 回测完成！耗时 {elapsed:.1f} 秒 | 运行ID: #{run_id}")
-
-        # ---- 展示结果 ----
-        st.markdown("---")
-
-        # 阶段一
-        st.subheader("阶段一：单指标测试结果")
-        phase1_df = results.get("phase1_df", pd.DataFrame())
-        if not phase1_df.empty:
-            # 散点图
-            fig = px.scatter(
-                phase1_df, x="最大回撤", y="夏普比率",
-                text="指标名称", color="夏普比率",
-                color_continuous_scale="RdYlGn",
-                title="单指标: 夏普比率 vs 最大回撤",
-                hover_data=["年化收益率", "胜率", "交易次数"],
-            )
-            fig.update_traces(textposition="top center", textfont_size=8)
-            fig.update_layout(height=500)
-            st.plotly_chart(fig, use_container_width=True)
-
-            # 表格
-            display_cols = ["指标名称", "年化收益率", "最大回撤", "夏普比率",
-                           "胜率", "盈亏比", "交易次数", "年化波动率"]
-            avail_cols = [c for c in display_cols if c in phase1_df.columns]
-            st.dataframe(phase1_df[avail_cols].head(20), use_container_width=True, hide_index=True)
-
-        # 阶段二
-        st.subheader("阶段二：组合策略测试结果")
-        phase2_df = results.get("phase2_df", pd.DataFrame())
-        if not phase2_df.empty:
-            display_cols = ["指标组合", "逻辑", "年化收益率", "最大回撤", "夏普比率",
-                           "胜率", "盈亏比", "交易次数"]
-            avail_cols = [c for c in display_cols if c in phase2_df.columns]
-            st.dataframe(phase2_df[avail_cols].head(20), use_container_width=True, hide_index=True)
-
-        # 最优策略
-        best_name = results.get("best_name", "")
-        if best_name and "best_core" in results:
-            st.subheader(f"最优策略: {best_name}")
-            core = results["best_core"]
-            aux = results.get("best_aux", {})
-
-            c1, c2, c3, c4, c5, c6 = st.columns(6)
-            c1.metric("年化收益", f"{core.get('年化收益率', 0):.2f}%")
-            c2.metric("夏普比率", f"{core.get('夏普比率', 0):.3f}")
-            c3.metric("最大回撤", f"{core.get('最大回撤', 0):.2f}%")
-            c4.metric("胜率", f"{core.get('胜率', 0):.1f}%")
-            c5.metric("交易次数", f"{core.get('交易次数', 0)}")
-            c6.metric("盈亏比", f"{core.get('盈亏比', 0):.2f}")
-
-            # 收益曲线
-            equity = results.get("best_equity")
-            bench_close = benchmark_df["close"]
-            if equity is not None:
-                strat_norm = equity / equity.iloc[0] * 100
-                bench_norm = bench_close / bench_close.iloc[0] * 100
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=strat_norm.index, y=strat_norm.values,
-                    name=f"策略: {best_name}", line=dict(color="#1f77b4", width=2),
-                ))
-                fig.add_trace(go.Scatter(
-                    x=bench_norm.index, y=bench_norm.values,
-                    name="基准", line=dict(color="#ff7f0e", width=1.5, dash="dash"),
-                ))
-                fig.update_layout(title="收益曲线对比", yaxis_title="净值 (起始=100)",
-                                   height=450, hovermode="x unified")
-                st.plotly_chart(fig, use_container_width=True)
-
-            # 月度收益热力图
-            monthly = results.get("best_monthly")
-            if monthly is not None and not monthly.empty:
-                plot_data = monthly.drop(columns=["全年"], errors="ignore") * 100
-                fig = px.imshow(
-                    plot_data, text_auto=".1f",
-                    color_continuous_scale="RdYlGn", color_continuous_midpoint=0,
-                    title="月度收益热力图 (%)",
-                    labels=dict(x="月份", y="年份", color="收益率(%)"),
-                )
-                fig.update_layout(height=300)
-                st.plotly_chart(fig, use_container_width=True)
-
-            # 交易记录
-            trade_log = results.get("best_trade_log")
-            if trade_log is not None and not trade_log.empty:
-                st.markdown("**交易记录**")
-                st.dataframe(trade_log, use_container_width=True, hide_index=True)
-
-        # 阶段三
-        phase3_df = results.get("phase3_df", pd.DataFrame())
-        if not phase3_df.empty:
-            st.subheader("阶段三：参数敏感性")
-            metric_cols = {"指标名称", "总收益率", "年化收益率", "最大回撤", "年化波动率",
-                          "夏普比率", "卡玛比率", "索提诺比率", "胜率", "盈亏比",
-                          "交易次数", "平均持仓天数", "年化交易频率"}
-            param_cols = [c for c in phase3_df.columns if c not in metric_cols]
-            if param_cols:
-                fig = px.scatter(
-                    phase3_df, x=param_cols[0], y="夏普比率",
-                    color="年化收益率", size="交易次数",
-                    color_continuous_scale="RdYlGn",
-                    title=f"参数敏感性: {param_cols[0]} vs 夏普比率",
-                    hover_data=["年化收益率", "最大回撤", "交易次数"],
-                )
-                fig.update_layout(height=450)
-                st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(phase3_df.head(30), use_container_width=True, hide_index=True)
+        return results, run_id, benchmark_df
 
     except Exception as e:
         storage.update_run_status(run_id, "failed", time.time() - start_time)
         st.error(f"回测失败: {e}")
         import traceback
         st.code(traceback.format_exc())
+        return None, run_id, None
+
+
+# ---- 手动选择模式：先看阶段一二，再选策略进行阶段三 ----
+if _is_manual_phase3:
+    col_btn1, col_btn2 = st.columns(2)
+    with col_btn1:
+        btn_phase12 = st.button("🚀 运行阶段一 & 二", type="primary", use_container_width=True)
+    with col_btn2:
+        btn_phase3 = st.button("⚡ 继续阶段三", use_container_width=True,
+                                disabled=("_manual_candidates" not in st.session_state))
+
+    # 候选策略选择器（仅在阶段一二完成后显示）
+    if "_manual_candidates" in st.session_state:
+        selected_strategy = st.selectbox(
+            "选择要优化的策略",
+            st.session_state["_manual_candidates"],
+            help="从阶段一（单指标）和阶段二（组合策略）的结果中选择一个策略进行阶段三参数优化。",
+        )
+    else:
+        selected_strategy = None
+
+    if btn_phase12:
+        # 只运行阶段一+二（phase3_override="__SKIP__" 表示跳过阶段三）
+        ret = _run_and_save(phase3_override="__SKIP__")
+        if ret[0] is not None:
+            results = ret[0]
+            # 构建候选策略列表
+            candidates = []
+            p1 = results.get("phase1_df", pd.DataFrame())
+            p2 = results.get("phase2_df", pd.DataFrame())
+            if not p1.empty:
+                candidates += p1.head(15)["指标名称"].tolist()
+            if not p2.empty:
+                for _, r in p2.head(15).iterrows():
+                    cname = r.get("指标组合", r.get("指标名称", ""))
+                    logic = r.get("逻辑", "")
+                    candidates.append(f"{cname} [{logic}]" if logic else cname)
+            st.session_state["_manual_candidates"] = candidates
+            st.session_state["_manual_run_id"] = ret[1]
+            st.rerun()
+
+    if btn_phase3 and selected_strategy:
+        ret = _run_and_save(phase3_override=selected_strategy)
+        if ret[0] is not None:
+            results, run_id, benchmark_df = ret
+            # 清理临时状态
+            st.session_state.pop("_manual_candidates", None)
+            st.session_state.pop("_manual_run_id", None)
+            _show_backtest_results(results, benchmark_df)
+
+else:
+    # ---- 自动模式：一键完成全部三阶段 ----
+    if st.button("🚀 开始回测", type="primary", use_container_width=True):
+        ret = _run_and_save()
+        if ret[0] is not None:
+            results, run_id, benchmark_df = ret
+            _show_backtest_results(results, benchmark_df)

@@ -215,3 +215,110 @@ def get_trade_log(pf: vbt.Portfolio) -> pd.DataFrame:
     result = trades.rename(columns=cols_map)
     keep = [v for v in cols_map.values() if v in result.columns]
     return result[keep] if keep else result
+
+
+# ============================================================
+# 专业量化分析扩展函数
+# ============================================================
+
+def get_rolling_sharpe(equity: pd.Series, window: int = 60) -> pd.Series:
+    """计算滚动夏普比率（年化），展示策略稳定性随时间变化"""
+    daily_returns = equity.pct_change().dropna()
+    rolling_mean = daily_returns.rolling(window).mean() * 252
+    rolling_std = daily_returns.rolling(window).std() * np.sqrt(252)
+    rolling_sharpe = (rolling_mean - RISK_FREE_RATE) / rolling_std
+    return rolling_sharpe.dropna()
+
+
+def calculate_strategy_grade(core: dict, aux: dict) -> dict:
+    """
+    策略综合评级 A/B/C/D/F，基于多维度加权评分。
+    返回 {"grade": "A", "score": 85, "dimensions": {...}}
+    """
+    # 各维度标准化到 0~100
+    def _norm(val, lo, hi):
+        return max(0.0, min(100.0, (val - lo) / (hi - lo) * 100)) if hi != lo else 50.0
+
+    sharpe = core.get("夏普比率", 0)
+    max_dd = core.get("最大回撤", 0)
+    win_rate = core.get("胜率", 0)
+    plr = core.get("盈亏比", 0)
+    pf = aux.get("盈利因子", 0)
+    calmar = core.get("卡玛比率", 0)
+
+    dims = {
+        "收益风险比": _norm(sharpe, -0.5, 3.0),
+        "回撤控制": _norm(50 - max_dd, -20, 50),       # 回撤越小分越高
+        "胜率": _norm(win_rate, 20, 80),
+        "盈亏比": _norm(min(plr, 5), 0, 5),
+        "盈利因子": _norm(min(pf, 5), 0, 5),
+        "卡玛比率": _norm(calmar, -0.5, 3.0),
+    }
+
+    weights = {"收益风险比": 0.25, "回撤控制": 0.20, "胜率": 0.15,
+               "盈亏比": 0.15, "盈利因子": 0.15, "卡玛比率": 0.10}
+    score = sum(dims[k] * weights[k] for k in dims)
+
+    if score >= 80:
+        grade = "A"
+    elif score >= 65:
+        grade = "B"
+    elif score >= 45:
+        grade = "C"
+    elif score >= 25:
+        grade = "D"
+    else:
+        grade = "F"
+
+    return {"grade": grade, "score": round(score, 1), "dimensions": dims}
+
+
+def get_streak_stats(trade_log_df: pd.DataFrame) -> dict:
+    """计算最大连续盈利/亏损次数统计"""
+    if trade_log_df is None or trade_log_df.empty:
+        return {"max_win_streak": 0, "max_loss_streak": 0,
+                "avg_win_streak": 0, "avg_loss_streak": 0}
+
+    pnl_col = None
+    for col in ["盈亏金额", "PnL", "pnl"]:
+        if col in trade_log_df.columns:
+            pnl_col = col
+            break
+    if pnl_col is None:
+        return {"max_win_streak": 0, "max_loss_streak": 0,
+                "avg_win_streak": 0, "avg_loss_streak": 0}
+
+    pnl = trade_log_df[pnl_col].values
+    max_win, max_loss = 0, 0
+    cur_win, cur_loss = 0, 0
+    win_streaks, loss_streaks = [], []
+
+    for v in pnl:
+        if v > 0:
+            cur_win += 1
+            if cur_loss > 0:
+                loss_streaks.append(cur_loss)
+                cur_loss = 0
+        elif v < 0:
+            cur_loss += 1
+            if cur_win > 0:
+                win_streaks.append(cur_win)
+                cur_win = 0
+        else:
+            if cur_win > 0:
+                win_streaks.append(cur_win)
+            if cur_loss > 0:
+                loss_streaks.append(cur_loss)
+            cur_win = cur_loss = 0
+
+    if cur_win > 0:
+        win_streaks.append(cur_win)
+    if cur_loss > 0:
+        loss_streaks.append(cur_loss)
+
+    return {
+        "max_win_streak": max(win_streaks) if win_streaks else 0,
+        "max_loss_streak": max(loss_streaks) if loss_streaks else 0,
+        "avg_win_streak": round(np.mean(win_streaks), 1) if win_streaks else 0,
+        "avg_loss_streak": round(np.mean(loss_streaks), 1) if loss_streaks else 0,
+    }

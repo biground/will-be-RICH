@@ -124,6 +124,11 @@ def init_db():
             conn.execute("ALTER TABLE backtest_runs ADD COLUMN extra_params_json TEXT")
         except Exception:
             pass
+        # 兼容旧版：添加 equity_json 列到 best_strategy（存储净值曲线）
+        try:
+            conn.execute("ALTER TABLE best_strategy ADD COLUMN equity_json TEXT")
+        except Exception:
+            pass
 
 
 # ---- 写入操作 ----
@@ -219,17 +224,19 @@ def save_phase3(run_id, strategy_name, param_df):
             ))
 
 
-def save_best_strategy(run_id, name, core, aux, bench, monthly_df, trade_log_df):
+def save_best_strategy(run_id, name, core, aux, bench, monthly_df, trade_log_df, equity_series=None):
     """保存最优策略详细信息"""
     monthly_json = monthly_df.to_json() if monthly_df is not None and not monthly_df.empty else "{}"
     trade_json = trade_log_df.to_json() if trade_log_df is not None and not trade_log_df.empty else "{}"
+    equity_json = equity_series.to_json() if equity_series is not None else None
     with get_conn() as conn:
         conn.execute("""
             INSERT INTO best_strategy
                 (run_id, strategy_name, annual_return, sharpe, max_drawdown,
                  win_rate, trade_count, core_metrics_json, aux_metrics_json,
-                 benchmark_metrics_json, monthly_returns_json, trade_log_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 benchmark_metrics_json, monthly_returns_json, trade_log_json,
+                 equity_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             run_id, name,
             core.get("年化收益率"), core.get("夏普比率"), core.get("最大回撤"),
@@ -237,7 +244,7 @@ def save_best_strategy(run_id, name, core, aux, bench, monthly_df, trade_log_df)
             json.dumps(core, ensure_ascii=False),
             json.dumps(aux, ensure_ascii=False),
             json.dumps(bench, ensure_ascii=False),
-            monthly_json, trade_json,
+            monthly_json, trade_json, equity_json,
         ))
 
 

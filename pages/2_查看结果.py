@@ -8,6 +8,7 @@ import json
 
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 
@@ -18,6 +19,30 @@ if ROOT not in sys.path:
 import storage
 
 st.set_page_config(page_title="查看结果", page_icon="📊", layout="wide")
+st.markdown("""
+<style>
+div[data-testid="stAppViewContainer"] > div:first-child { padding-top: 3.2rem; }
+.fixed-nav {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 999;
+    background: linear-gradient(135deg, #1f77b4 0%, #2196F3 100%);
+    display: flex; justify-content: center; gap: 0; padding: 0;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+}
+.fixed-nav a {
+    color: rgba(255,255,255,0.85); text-decoration: none;
+    padding: 0.65rem 2rem; font-size: 0.95rem; font-weight: 500;
+    transition: all 0.2s; border-bottom: 3px solid transparent;
+}
+.fixed-nav a:hover { color: #fff; background: rgba(255,255,255,0.1); }
+.fixed-nav a.active { color: #fff; border-bottom: 3px solid #fff; background: rgba(255,255,255,0.15); }
+</style>
+<div class="fixed-nav">
+    <a href="/" target="_self">🏠 首页</a>
+    <a href="/新建回测" target="_self">🚀 新建回测</a>
+    <a href="/查看结果" target="_self" class="active">📊 查看结果</a>
+    <a href="/历史记录" target="_self">📚 历史记录</a>
+</div>
+""", unsafe_allow_html=True)
 st.header("📊 查看结果")
 
 # 获取所有运行记录
@@ -227,6 +252,8 @@ with tab3:
 
 # ---- 最优策略 ----
 with tab4:
+    from engine.metrics import calculate_strategy_grade, get_rolling_sharpe, get_streak_stats
+
     best = storage.get_best_strategy(selected_id)
     if not best:
         st.info("无最优策略数据")
@@ -236,6 +263,38 @@ with tab4:
         core = best.get("core_metrics", {})
         aux = best.get("aux_metrics", {})
         bench = best.get("benchmark_metrics", {})
+
+        # ---- 策略综合评级 ----
+        grade_info = calculate_strategy_grade(core, aux)
+        grade_colors = {"A": "#2e7d32", "B": "#1565c0", "C": "#f57f17", "D": "#e65100", "F": "#b71c1c"}
+        gc = grade_colors.get(grade_info["grade"], "#666")
+        st.markdown(
+            f'<div style="display:flex;align-items:center;gap:1.5rem;margin-bottom:1rem;">'
+            f'<span style="font-size:3.5rem;font-weight:bold;color:{gc};'
+            f'border:4px solid {gc};border-radius:12px;padding:0.2rem 1rem;">'
+            f'{grade_info["grade"]}</span>'
+            f'<div><span style="font-size:1.3rem;font-weight:600;">综合评分: {grade_info["score"]}/100</span><br>'
+            f'<span style="color:#666;">基于收益风险比、回撤控制、胜率、盈亏比、盈利因子、卡玛比率六维度加权</span></div></div>',
+            unsafe_allow_html=True,
+        )
+
+        # 雷达图
+        dims = grade_info["dimensions"]
+        radar_labels = list(dims.keys())
+        radar_vals = [dims[k] for k in radar_labels]
+        radar_vals_closed = radar_vals + [radar_vals[0]]
+        radar_labels_closed = radar_labels + [radar_labels[0]]
+        fig_radar = go.Figure(go.Scatterpolar(
+            r=radar_vals_closed, theta=radar_labels_closed,
+            fill='toself', fillcolor='rgba(31,119,180,0.15)',
+            line=dict(color='#1f77b4', width=2),
+        ))
+        fig_radar.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+            showlegend=False, height=350, margin=dict(t=30, b=30),
+            title="策略多维度评分",
+        )
+        st.plotly_chart(fig_radar, use_container_width=True)
 
         # 指标说明区
         with st.expander("📖 如何理解这些指标？"):
@@ -276,6 +335,88 @@ with tab4:
         c5.metric("CVaR 95%", f"{aux.get('CVaR_95', 0):.3f}%")
         c6.metric("预期收益", f"¥{aux.get('预期收益', 0):,.2f}")
 
+        # ---- 净值曲线 + 回撤曲线 (双Y轴) ----
+        equity_json = best.get("equity_json")
+        equity_series = None
+        if equity_json and equity_json != "{}" and equity_json != "null":
+            try:
+                equity_series = pd.read_json(equity_json, typ='series').sort_index()
+            except Exception:
+                pass
+
+        if equity_series is not None and len(equity_series) > 1:
+            st.markdown("#### 净值与回撤曲线")
+            st.caption("蓝线为策略净值走势（左轴），红色填充区域为回撤幅度（右轴）。回撤越深表示当时离历史最高点跌得越多。")
+            eq_norm = equity_series / equity_series.iloc[0] * 100
+            cummax = eq_norm.cummax()
+            drawdown = (eq_norm - cummax) / cummax * 100
+
+            fig_eq = go.Figure()
+            fig_eq.add_trace(go.Scatter(
+                x=eq_norm.index, y=eq_norm.values,
+                name="净值", line=dict(color="#1f77b4", width=2),
+                yaxis="y1",
+            ))
+            fig_eq.add_trace(go.Scatter(
+                x=drawdown.index, y=drawdown.values,
+                name="回撤 (%)", fill="tozeroy",
+                fillcolor="rgba(255,0,0,0.12)",
+                line=dict(color="rgba(255,0,0,0.5)", width=1),
+                yaxis="y2",
+            ))
+            fig_eq.update_layout(
+                yaxis=dict(title="净值 (起始=100)", side="left"),
+                yaxis2=dict(title="回撤 (%)", side="right", overlaying="y",
+                            range=[min(drawdown.min() * 1.5, -5), 5]),
+                height=420, hovermode="x unified", legend=dict(x=0, y=1.1, orientation="h"),
+            )
+            st.plotly_chart(fig_eq, use_container_width=True)
+
+            # ---- 滚动夏普比率 ----
+            st.markdown("#### 滚动夏普比率 (60日)")
+            st.caption("展示策略夏普比率随时间变化的稳定性。曲线平稳说明策略在不同市况下表现一致；大幅波动说明依赖特定行情。")
+            rolling_sharpe = get_rolling_sharpe(equity_series, window=60)
+            if len(rolling_sharpe) > 0:
+                fig_rs = go.Figure()
+                fig_rs.add_trace(go.Scatter(
+                    x=rolling_sharpe.index, y=rolling_sharpe.values,
+                    line=dict(color="#1f77b4", width=1.5),
+                    name="滚动夏普(60日)",
+                ))
+                fig_rs.add_hline(y=0, line_dash="dash", line_color="grey", opacity=0.5)
+                fig_rs.add_hline(y=1, line_dash="dot", line_color="green", opacity=0.4,
+                                 annotation_text="夏普=1")
+                fig_rs.update_layout(height=350, yaxis_title="年化夏普比率",
+                                     hovermode="x unified")
+                st.plotly_chart(fig_rs, use_container_width=True)
+
+            # ---- 收益分布直方图 ----
+            st.markdown("#### 日收益率分布")
+            st.caption("蓝色柱状图为实际日收益率分布，红色曲线为对应正态分布。左偏(向左拉长)说明极端亏损出现频率高于正态假设。")
+            daily_returns = equity_series.pct_change().dropna()
+            if len(daily_returns) > 10:
+                fig_dist = go.Figure()
+                fig_dist.add_trace(go.Histogram(
+                    x=daily_returns.values * 100, nbinsx=80,
+                    name="实际分布", marker_color="rgba(31,119,180,0.6)",
+                    histnorm="probability density",
+                ))
+                # 正态分布叠加
+                x_range = np.linspace(daily_returns.min() * 100, daily_returns.max() * 100, 200)
+                from scipy.stats import norm
+                mu, sigma = daily_returns.mean() * 100, daily_returns.std() * 100
+                fig_dist.add_trace(go.Scatter(
+                    x=x_range, y=norm.pdf(x_range, mu, sigma),
+                    name="正态分布", line=dict(color="red", width=2, dash="dash"),
+                ))
+                fig_dist.update_layout(
+                    xaxis_title="日收益率 (%)", yaxis_title="概率密度",
+                    height=350, showlegend=True,
+                )
+                st.plotly_chart(fig_dist, use_container_width=True)
+        else:
+            st.info("💡 净值曲线数据不可用（旧版回测记录不含此数据，重新运行回测即可生成）。")
+
         # 基准对比
         st.markdown("#### 基准对比")
         st.caption("💡 **基准**是指在回测期间内、对目标指数实行“买入并持有不动”的策略表现。若策略年化收益低于基准，说明直接定期买入并持有优于该策略。")
@@ -302,39 +443,72 @@ with tab4:
         fig_comp.update_layout(barmode="group", title="策略 vs 基准", height=350)
         st.plotly_chart(fig_comp, use_container_width=True)
 
-        # 月度收益
+        # ---- 年度收益拆解 + 月度热力图 ----
         monthly_json = best.get("monthly_returns_json", "{}")
+        monthly_df = None
         if monthly_json and monthly_json != "{}":
             try:
                 monthly_df = pd.read_json(monthly_json)
-                if not monthly_df.empty:
-                    st.markdown("#### 月度收益热力图")
-                    st.caption("🟢 绿色 = 当月盈利；🔴 红色 = 当月亏损；颜色越深表示收益/损失幅度越大。可快速判断策略在哪些年廞/月份表现较充裕。")
-                    plot_data = monthly_df.drop(columns=["全年"], errors="ignore") * 100
-                    fig = px.imshow(
-                        plot_data, text_auto=".1f",
-                        color_continuous_scale="RdYlGn",
-                        color_continuous_midpoint=0,
-                        labels=dict(x="月份", y="年份", color="收益率(%)"),
-                    )
-                    fig.update_layout(height=300)
-                    st.plotly_chart(fig, use_container_width=True)
             except Exception:
                 pass
 
-        # 交易记录
+        if monthly_df is not None and not monthly_df.empty:
+            if "全年" in monthly_df.columns:
+                st.markdown("#### 年度收益拆解")
+                st.caption("每根柱子代表该年的总收益率。绿色盈利，红色亏损。帮助判断策略是否在大部分年份都有正收益。")
+                annual = monthly_df["全年"] * 100
+                colors = ["#2e7d32" if v >= 0 else "#c62828" for v in annual.values]
+                fig_annual = go.Figure(go.Bar(
+                    x=[str(y) for y in annual.index], y=annual.values,
+                    marker_color=colors, text=[f"{v:.1f}%" for v in annual.values],
+                    textposition="outside",
+                ))
+                fig_annual.update_layout(
+                    title="年度收益率 (%)", yaxis_title="收益率 (%)",
+                    height=350, xaxis_title="年份",
+                )
+                fig_annual.add_hline(y=0, line_dash="dash", line_color="grey", opacity=0.5)
+                st.plotly_chart(fig_annual, use_container_width=True)
+
+            # 月度收益热力图
+            st.markdown("#### 月度收益热力图")
+            st.caption("🟢 绿色 = 当月盈利；🔴 红色 = 当月亏损；颜色越深表示收益/损失幅度越大。可快速判断策略在哪些年份/月份表现较好。")
+            plot_data = monthly_df.drop(columns=["全年"], errors="ignore") * 100
+            fig = px.imshow(
+                plot_data, text_auto=".1f",
+                color_continuous_scale="RdYlGn",
+                color_continuous_midpoint=0,
+                labels=dict(x="月份", y="年份", color="收益率(%)"),
+            )
+            fig.update_layout(height=300)
+            st.plotly_chart(fig, use_container_width=True)
+
+        # ---- 交易统计与连续盈亏 ----
         trade_json = best.get("trade_log_json", "{}")
+        trade_df = None
         if trade_json and trade_json != "{}":
             try:
                 trade_df = pd.read_json(trade_json)
-                if not trade_df.empty:
-                    # 将毫秒时间戳转为可读日期
-                    for _tcol in ["买入时间", "卖出时间"]:
-                        if _tcol in trade_df.columns:
-                            trade_df[_tcol] = pd.to_datetime(
-                                trade_df[_tcol], unit="ms", errors="coerce"
-                            ).dt.strftime("%Y-%m-%d")
-                    st.markdown("#### 交易记录")
-                    st.dataframe(trade_df, use_container_width=True, hide_index=True)
             except Exception:
                 pass
+
+        if trade_df is not None and not trade_df.empty:
+            # 连续盈亏统计
+            streaks = get_streak_stats(trade_df)
+            if any(v > 0 for v in streaks.values()):
+                st.markdown("#### 连续盈亏统计")
+                st.caption("衡量策略的连胜/连亏特征。连续亏损次数越多，对交易者心理压力越大。")
+                s1, s2, s3, s4 = st.columns(4)
+                s1.metric("最大连续盈利", f"{streaks['max_win_streak']} 笔")
+                s2.metric("最大连续亏损", f"{streaks['max_loss_streak']} 笔")
+                s3.metric("平均连续盈利", f"{streaks['avg_win_streak']} 笔")
+                s4.metric("平均连续亏损", f"{streaks['avg_loss_streak']} 笔")
+
+            # 交易记录表
+            for _tcol in ["买入时间", "卖出时间"]:
+                if _tcol in trade_df.columns:
+                    trade_df[_tcol] = pd.to_datetime(
+                        trade_df[_tcol], unit="ms", errors="coerce"
+                    ).dt.strftime("%Y-%m-%d")
+            st.markdown("#### 交易记录")
+            st.dataframe(trade_df, use_container_width=True, hide_index=True)

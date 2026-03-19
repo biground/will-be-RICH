@@ -11,6 +11,33 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ---- 固定顶部导航栏 ----
+_NAV_CSS = """
+<style>
+div[data-testid="stAppViewContainer"] > div:first-child { padding-top: 3.2rem; }
+.fixed-nav {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 999;
+    background: linear-gradient(135deg, #1f77b4 0%, #2196F3 100%);
+    display: flex; justify-content: center; gap: 0; padding: 0;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+}
+.fixed-nav a {
+    color: rgba(255,255,255,0.85); text-decoration: none;
+    padding: 0.65rem 2rem; font-size: 0.95rem; font-weight: 500;
+    transition: all 0.2s; border-bottom: 3px solid transparent;
+}
+.fixed-nav a:hover { color: #fff; background: rgba(255,255,255,0.1); }
+.fixed-nav a.active { color: #fff; border-bottom: 3px solid #fff; background: rgba(255,255,255,0.15); }
+</style>
+<div class="fixed-nav">
+    <a href="/" target="_self" class="active">🏠 首页</a>
+    <a href="/新建回测" target="_self">🚀 新建回测</a>
+    <a href="/查看结果" target="_self">📊 查看结果</a>
+    <a href="/历史记录" target="_self">📚 历史记录</a>
+</div>
+"""
+st.markdown(_NAV_CSS, unsafe_allow_html=True)
+
 # 主页
 st.title("📈 ETF 技术指标回测系统")
 st.markdown("---")
