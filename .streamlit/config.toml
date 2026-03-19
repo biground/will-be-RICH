@@ -1,0 +1,17 @@
+[browser]
+gatherUsageStats = false
+
+[server]
+# 云端部署：文件监听关闭，节省资源
+fileWatcherType = "none"
+# 允许跨来源访问（手机/其他设备访问需要）
+enableCORS = false
+enableXsrfProtection = true
+
+[theme]
+base = "light"
+primaryColor = "#1f77b4"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f0f2f6"
+textColor = "#31333f"
+
