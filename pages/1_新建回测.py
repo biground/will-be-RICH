@@ -7,6 +7,11 @@ import os
 import time
 import itertools
 import warnings
+import smtplib
+import random
+import string
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 import streamlit as st
 import pandas as pd
@@ -1041,6 +1046,115 @@ def _run_and_save(phase3_override=None):
         st.code(traceback.format_exc())
         return None, run_id, None
 
+
+# ============================================================
+# OTP 邮件验证（防止他人乱刷）
+# ============================================================
+_OTP_TTL = 300           # 验证码有效期（秒）
+_OTP_MAX_ATTEMPTS = 5    # 最大尝试次数
+
+
+def _generate_otp() -> str:
+    return "".join(random.choices(string.digits, k=6))
+
+
+def _send_otp_email(otp: str) -> bool:
+    """通过 163 SMTP SSL 发送验证码到绑定邮箱，成功返回 True。"""
+    try:
+        cfg = st.secrets.get("smtp", {})
+        host = str(cfg.get("host", "smtp.163.com"))
+        port = int(cfg.get("port", 465))
+        user = str(cfg.get("user", ""))
+        password = str(cfg.get("password", ""))
+        receiver = str(cfg.get("receiver", user))
+
+        msg = MIMEMultipart()
+        msg["From"] = user
+        msg["To"] = receiver
+        msg["Subject"] = f"【回测系统】动态验证码：{otp}"
+        body = (
+            f"您好，\n\n"
+            f"您的回测系统动态验证码为：\n\n"
+            f"        {otp}\n\n"
+            f"验证码有效期 5 分钟，请尽快输入。\n"
+            f"如非本人操作，请忽略此邮件。\n"
+        )
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+
+        with smtplib.SMTP_SSL(host, port, timeout=15) as server:
+            server.login(user, password)
+            server.sendmail(user, receiver, msg.as_string())
+        return True
+    except Exception as e:
+        st.error(f"邮件发送失败：{e}")
+        return False
+
+
+def _otp_gate() -> bool:
+    """
+    OTP 门控 UI。
+    - 已验证 → 静默返回 True
+    - 未验证 → 渲染验证 UI，返回 False（调用方应接着调用 st.stop()）
+    """
+    if st.session_state.get("_otp_verified"):
+        return True
+
+    st.markdown("---")
+    st.subheader("🔐 运行回测需要身份验证")
+    st.caption(
+        "为防止他人滥用后台资源，每次会话首次运行回测需要通过邮件验证码确认身份。"
+        "验证码将发送到绑定邮箱，**本次会话只需验证一次**（关闭标签页后重置）。"
+    )
+
+    expiry = st.session_state.get("_otp_expiry", 0.0)
+    has_pending = expiry > time.time()
+
+    col_btn, col_tip = st.columns([1, 3])
+    with col_btn:
+        label = "🔄 重新发送" if has_pending else "📧 发送验证码"
+        if st.button(label, use_container_width=True, key="_otp_send_btn"):
+            otp = _generate_otp()
+            with st.spinner("正在发送邮件…"):
+                if _send_otp_email(otp):
+                    st.session_state["_otp_code"] = otp
+                    st.session_state["_otp_expiry"] = time.time() + _OTP_TTL
+                    st.session_state["_otp_attempts"] = 0
+                    st.session_state.pop("_otp_input", None)
+                    expiry = st.session_state["_otp_expiry"]
+                    has_pending = True
+                    st.success("✉️ 验证码已发送，请查收邮件！")
+    with col_tip:
+        if has_pending:
+            remaining = max(0, int(expiry - time.time()))
+            st.caption(f"⏱️ 验证码剩余有效期：{remaining // 60} 分 {remaining % 60:02d} 秒")
+
+    if has_pending:
+        attempts = st.session_state.get("_otp_attempts", 0)
+        if attempts >= _OTP_MAX_ATTEMPTS:
+            st.error("❌ 验证失败次数过多，请重新发送验证码。")
+        else:
+            entered = st.text_input(
+                "请输入 6 位验证码", max_chars=6, placeholder="000000", key="_otp_input",
+            )
+            if st.button("✅ 验证并解锁回测", type="primary", key="_otp_verify_btn"):
+                if time.time() > st.session_state.get("_otp_expiry", 0.0):
+                    st.error("⚠️ 验证码已过期，请重新发送。")
+                elif entered == st.session_state.get("_otp_code", "~~INVALID~~"):
+                    st.session_state["_otp_verified"] = True
+                    st.success("✅ 验证成功！页面即将刷新…")
+                    st.rerun()
+                else:
+                    st.session_state["_otp_attempts"] = attempts + 1
+                    left = _OTP_MAX_ATTEMPTS - attempts - 1
+                    st.error(f"❌ 验证码错误，还有 {left} 次机会。")
+
+    st.markdown("---")
+    return False
+
+
+# ---- OTP 门控：未验证时阻止后续执行 ----
+if not _otp_gate():
+    st.stop()
 
 # ---- 手动选择模式：先看阶段一二，再选策略进行阶段三 ----
 if _is_manual_phase3:

@@ -27,6 +27,9 @@ output/
 venv/
 env/
 
+# Streamlit 密钥（含 SMTP 授权码，严禁提交）
+.streamlit/secrets.toml
+
 # 编辑器
 .vscode/settings.json
 .idea/
