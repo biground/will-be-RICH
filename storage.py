@@ -42,7 +42,8 @@ def init_db():
                 exit_fees REAL,
                 status TEXT DEFAULT 'running',
                 elapsed_seconds REAL,
-                notes TEXT
+                notes TEXT,
+                extra_params_json TEXT
             )
         """)
         conn.execute("""
@@ -116,6 +117,7 @@ def init_db():
                 benchmark_metrics_json TEXT,
                 monthly_returns_json TEXT,
                 trade_log_json TEXT,
+                equity_json TEXT,
                 FOREIGN KEY (run_id) REFERENCES backtest_runs(id)
             )
         """)
