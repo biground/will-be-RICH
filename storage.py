@@ -254,59 +254,89 @@ def save_best_strategy(run_id, name, core, aux, bench, monthly_df, trade_log_df,
 
 def list_runs():
     """列出所有回测记录"""
-    with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT * FROM backtest_runs ORDER BY id DESC"
-        ).fetchall()
-        return pd.DataFrame([dict(r) for r in rows])
+    try:
+        with get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM backtest_runs ORDER BY id DESC"
+            ).fetchall()
+            return pd.DataFrame([dict(r) for r in rows])
+    except Exception as e:
+        import warnings
+        warnings.warn(f"数据库查询失败: {e}", stacklevel=2)
+        return pd.DataFrame()
 
 
 def get_run(run_id):
     """获取单次运行信息"""
-    with get_conn() as conn:
-        row = conn.execute("SELECT * FROM backtest_runs WHERE id=?", (run_id,)).fetchone()
-        if row:
-            d = dict(row)
-            d["extra_params"] = json.loads(d.get("extra_params_json") or "{}")
-            return d
+    try:
+        with get_conn() as conn:
+            row = conn.execute("SELECT * FROM backtest_runs WHERE id=?", (run_id,)).fetchone()
+            if row:
+                d = dict(row)
+                d["extra_params"] = json.loads(d.get("extra_params_json") or "{}")
+                return d
+            return None
+    except Exception as e:
+        import warnings
+        warnings.warn(f"数据库查询失败: {e}", stacklevel=2)
         return None
 
 
 def get_phase1(run_id):
-    with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT * FROM phase1_results WHERE run_id=? ORDER BY sharpe DESC", (run_id,)
-        ).fetchall()
-        return pd.DataFrame([dict(r) for r in rows])
+    try:
+        with get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM phase1_results WHERE run_id=? ORDER BY sharpe DESC", (run_id,)
+            ).fetchall()
+            return pd.DataFrame([dict(r) for r in rows])
+    except Exception as e:
+        import warnings
+        warnings.warn(f"数据库查询失败: {e}", stacklevel=2)
+        return pd.DataFrame()
 
 
 def get_phase2(run_id):
-    with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT * FROM phase2_results WHERE run_id=? ORDER BY sharpe DESC", (run_id,)
-        ).fetchall()
-        return pd.DataFrame([dict(r) for r in rows])
+    try:
+        with get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM phase2_results WHERE run_id=? ORDER BY sharpe DESC", (run_id,)
+            ).fetchall()
+            return pd.DataFrame([dict(r) for r in rows])
+    except Exception as e:
+        import warnings
+        warnings.warn(f"数据库查询失败: {e}", stacklevel=2)
+        return pd.DataFrame()
 
 
 def get_phase3(run_id):
-    with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT * FROM phase3_results WHERE run_id=? ORDER BY sharpe DESC", (run_id,)
-        ).fetchall()
-        return pd.DataFrame([dict(r) for r in rows])
+    try:
+        with get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM phase3_results WHERE run_id=? ORDER BY sharpe DESC", (run_id,)
+            ).fetchall()
+            return pd.DataFrame([dict(r) for r in rows])
+    except Exception as e:
+        import warnings
+        warnings.warn(f"数据库查询失败: {e}", stacklevel=2)
+        return pd.DataFrame()
 
 
 def get_best_strategy(run_id):
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM best_strategy WHERE run_id=?", (run_id,)
-        ).fetchone()
-        if row:
-            d = dict(row)
-            d["core_metrics"] = json.loads(d.get("core_metrics_json", "{}"))
-            d["aux_metrics"] = json.loads(d.get("aux_metrics_json", "{}"))
-            d["benchmark_metrics"] = json.loads(d.get("benchmark_metrics_json", "{}"))
-            return d
+    try:
+        with get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM best_strategy WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if row:
+                d = dict(row)
+                d["core_metrics"] = json.loads(d.get("core_metrics_json", "{}"))
+                d["aux_metrics"] = json.loads(d.get("aux_metrics_json", "{}"))
+                d["benchmark_metrics"] = json.loads(d.get("benchmark_metrics_json", "{}"))
+                return d
+            return None
+    except Exception as e:
+        import warnings
+        warnings.warn(f"数据库查询失败: {e}", stacklevel=2)
         return None
 
 

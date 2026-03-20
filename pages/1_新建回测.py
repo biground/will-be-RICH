@@ -123,43 +123,46 @@ with st.sidebar.expander("📋 加载历史回测参数"):
         if st.button("📥 填充到下方参数面板", use_container_width=True, key="_load_btn"):
             from datetime import datetime as _dt
             _r = storage.get_run(_sel_load_id)
-            _ep = _r.get("extra_params", {})
-            _sym = _r.get("etf_symbol", "510300")
-            _is_idx = _ep.get("is_index_mode", _sym in COMMON_INDICES)
-            _params = {"_sb_target_type": "指数" if _is_idx else "ETF基金"}
-            if _is_idx:
-                if _sym in COMMON_INDICES:
-                    _params["_sb_idx_mode"] = "常用指数"
-                    _params["_sb_idx_select"] = _sym
-                else:
-                    _params["_sb_idx_mode"] = "自定义代码"
-                    _params["_sb_idx_code"] = _sym
-                    _params["_sb_idx_name"] = _r.get("etf_name", "")
+            if _r is None:
+                st.error("❌ 无法加载该记录的详细信息")
             else:
-                if _sym in COMMON_ETFS:
-                    _params["_sb_etf_mode"] = "常用ETF"
-                    _params["_sb_etf_select"] = _sym
+                _ep = _r.get("extra_params", {})
+                _sym = _r.get("etf_symbol", "510300")
+                _is_idx = _ep.get("is_index_mode", _sym in COMMON_INDICES)
+                _params = {"_sb_target_type": "指数" if _is_idx else "ETF基金"}
+                if _is_idx:
+                    if _sym in COMMON_INDICES:
+                        _params["_sb_idx_mode"] = "常用指数"
+                        _params["_sb_idx_select"] = _sym
+                    else:
+                        _params["_sb_idx_mode"] = "自定义代码"
+                        _params["_sb_idx_code"] = _sym
+                        _params["_sb_idx_name"] = _r.get("etf_name", "")
                 else:
-                    _params["_sb_etf_mode"] = "自定义代码"
-                    _params["_sb_etf_code"] = _sym
-                    _params["_sb_etf_name"] = _r.get("etf_name", "")
-                    _params["_sb_bench_code"] = _r.get("benchmark_symbol", "000300")
-            try:
-                _params["_sb_start_date"] = _dt.strptime(_r["start_date"], "%Y%m%d").date()
-                _params["_sb_end_date"] = _dt.strptime(_r["end_date"], "%Y%m%d").date()
-            except Exception:
-                pass
-            _params["_sb_data_freq"] = _r.get("data_freq", "daily")
-            _params["_sb_init_cash"] = int(_r.get("init_cash") or 100000)
-            _params["_sb_slippage"] = float(_ep.get("slippage", 0.10))
-            _params["_sb_commission"] = float(_ep.get("commission", 0.02))
-            _params["_sb_stamp_tax"] = float(_ep.get("stamp_tax", 0.05))
-            _params["_sb_data_adjust"] = _ep.get("data_adjust", "qfq")
-            _params["_sb_phase2_top_n"] = int(_ep.get("phase2_top_n", 10))
-            _params["_sb_phase2_min_sharpe"] = float(_ep.get("phase2_min_sharpe", 1.0))
-            _params["_sb_phase2_max_dd"] = float(_ep.get("phase2_max_dd", 30.0))
-            st.session_state["_params_to_apply"] = _params
-            st.rerun()
+                    if _sym in COMMON_ETFS:
+                        _params["_sb_etf_mode"] = "常用ETF"
+                        _params["_sb_etf_select"] = _sym
+                    else:
+                        _params["_sb_etf_mode"] = "自定义代码"
+                        _params["_sb_etf_code"] = _sym
+                        _params["_sb_etf_name"] = _r.get("etf_name", "")
+                        _params["_sb_bench_code"] = _r.get("benchmark_symbol", "000300")
+                try:
+                    _params["_sb_start_date"] = _dt.strptime(_r["start_date"], "%Y%m%d").date()
+                    _params["_sb_end_date"] = _dt.strptime(_r["end_date"], "%Y%m%d").date()
+                except Exception:
+                    pass
+                _params["_sb_data_freq"] = _r.get("data_freq", "daily")
+                _params["_sb_init_cash"] = int(_r.get("init_cash") or 100000)
+                _params["_sb_slippage"] = float(_ep.get("slippage", 0.10))
+                _params["_sb_commission"] = float(_ep.get("commission", 0.02))
+                _params["_sb_stamp_tax"] = float(_ep.get("stamp_tax", 0.05))
+                _params["_sb_data_adjust"] = _ep.get("data_adjust", "qfq")
+                _params["_sb_phase2_top_n"] = int(_ep.get("phase2_top_n", 10))
+                _params["_sb_phase2_min_sharpe"] = float(_ep.get("phase2_min_sharpe", 1.0))
+                _params["_sb_phase2_max_dd"] = float(_ep.get("phase2_max_dd", 30.0))
+                st.session_state["_params_to_apply"] = _params
+                st.rerun()
     else:
         st.caption("暂无已完成的回测记录")
 
