@@ -132,6 +132,57 @@ def init_db():
         except Exception:
             pass
 
+        # 关注列表 — 支持 ETF+策略 组合关注
+        # 检查是否需要从旧表迁移（旧表 etf_symbol 有 UNIQUE 约束）
+        _need_migrate = False
+        try:
+            ddl_row = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='watchlist'"
+            ).fetchone()
+            if ddl_row and "UNIQUE" in ddl_row[0]:
+                _need_migrate = True
+            elif not ddl_row:
+                # 表不存在，直接创建
+                _need_migrate = False
+        except Exception:
+            pass
+
+        if _need_migrate:
+            try:
+                conn.execute("ALTER TABLE watchlist RENAME TO _watchlist_old")
+                conn.execute("""
+                    CREATE TABLE watchlist (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        etf_symbol TEXT NOT NULL,
+                        etf_name TEXT,
+                        strategy_name TEXT,
+                        run_id INTEGER,
+                        added_time TEXT NOT NULL
+                    )
+                """)
+                conn.execute("""
+                    INSERT INTO watchlist (etf_symbol, etf_name, strategy_name, run_id, added_time)
+                    SELECT etf_symbol, etf_name,
+                           CASE WHEN strategy_name IS NOT NULL THEN strategy_name ELSE NULL END,
+                           CASE WHEN run_id IS NOT NULL THEN run_id ELSE NULL END,
+                           added_time
+                    FROM _watchlist_old
+                """)
+                conn.execute("DROP TABLE _watchlist_old")
+            except Exception:
+                pass
+        else:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS watchlist (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    etf_symbol TEXT NOT NULL,
+                    etf_name TEXT,
+                    strategy_name TEXT,
+                    run_id INTEGER,
+                    added_time TEXT NOT NULL
+                )
+            """)
+
 
 # ---- 写入操作 ----
 
@@ -212,6 +263,11 @@ def save_phase3(run_id, strategy_name, param_df):
     param_cols = [c for c in param_df.columns if c not in metric_cols]
 
     with get_conn() as conn:
+        # 先删除同一 run_id + strategy_name 的旧记录，保留其他策略的结果
+        conn.execute(
+            "DELETE FROM phase3_results WHERE run_id=? AND strategy_name=?",
+            (run_id, strategy_name),
+        )
         for _, row in param_df.iterrows():
             params = {c: row[c] for c in param_cols if c in row.index}
             conn.execute("""
@@ -348,6 +404,68 @@ def delete_run(run_id):
         conn.execute("DELETE FROM phase3_results WHERE run_id=?", (run_id,))
         conn.execute("DELETE FROM best_strategy WHERE run_id=?", (run_id,))
         conn.execute("DELETE FROM backtest_runs WHERE id=?", (run_id,))
+
+
+# ---- 关注列表 ----
+
+def add_to_watchlist(etf_symbol: str, etf_name: str = "", strategy_name: str = "", run_id: int = None):
+    """添加 ETF+策略 到关注列表（同一 ETF+策略 组合已存在则更新）"""
+    key = strategy_name or ""
+    with get_conn() as conn:
+        existing = conn.execute(
+            "SELECT id FROM watchlist WHERE etf_symbol=? AND COALESCE(strategy_name, '')=?",
+            (etf_symbol, key),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE watchlist SET etf_name=?, run_id=?, added_time=? WHERE id=?",
+                (etf_name, run_id, datetime.now().isoformat(), existing[0]),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO watchlist (etf_symbol, etf_name, strategy_name, run_id, added_time) VALUES (?, ?, ?, ?, ?)",
+                (etf_symbol, etf_name, strategy_name or None, run_id, datetime.now().isoformat()),
+            )
+
+
+def remove_from_watchlist(etf_symbol: str, strategy_name: str = None):
+    """从关注列表移除。strategy_name=None 则删除该 ETF 的所有关注"""
+    with get_conn() as conn:
+        if strategy_name is not None:
+            conn.execute(
+                "DELETE FROM watchlist WHERE etf_symbol=? AND COALESCE(strategy_name, '')=?",
+                (etf_symbol, strategy_name),
+            )
+        else:
+            conn.execute("DELETE FROM watchlist WHERE etf_symbol=?", (etf_symbol,))
+
+
+def get_watchlist() -> pd.DataFrame:
+    """获取关注列表"""
+    try:
+        with get_conn() as conn:
+            rows = conn.execute("SELECT * FROM watchlist ORDER BY added_time DESC").fetchall()
+            return pd.DataFrame([dict(r) for r in rows])
+    except Exception:
+        return pd.DataFrame()
+
+
+def is_in_watchlist(etf_symbol: str, strategy_name: str = None) -> bool:
+    """检查是否在关注列表中。strategy_name=None 时检查 ETF 是否有任何关注"""
+    try:
+        with get_conn() as conn:
+            if strategy_name is not None:
+                row = conn.execute(
+                    "SELECT 1 FROM watchlist WHERE etf_symbol=? AND COALESCE(strategy_name, '')=?",
+                    (etf_symbol, strategy_name),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT 1 FROM watchlist WHERE etf_symbol=?", (etf_symbol,)
+                ).fetchone()
+            return row is not None
+    except Exception:
+        return False
 
 
 # 启动时自动初始化

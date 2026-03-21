@@ -61,8 +61,8 @@ def keltner_vol_signals(df: pd.DataFrame) -> list[tuple]:
     kc = ta.kc(df["high"], df["low"], df["close"],
                length=p_kc["period"], scalar=p_kc["mult"])
 
-    bbl_col = f"BBL_{p_bb['period']}_{p_bb['std']}"
-    bbu_col = f"BBU_{p_bb['period']}_{p_bb['std']}"
+    bbl_col = [c for c in bb.columns if c.startswith("BBL")][0]
+    bbu_col = [c for c in bb.columns if c.startswith("BBU")][0]
     kcl_col = [c for c in kc.columns if c.startswith("KCL")][0]
     kcu_col = [c for c in kc.columns if c.startswith("KCU")][0]
 

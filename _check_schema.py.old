@@ -1,0 +1,5 @@
+import sqlite3
+conn = sqlite3.connect("backtest_results.db")
+row = conn.execute("SELECT sql FROM sqlite_master WHERE name='watchlist'").fetchone()
+print(row[0] if row else "Table not found")
+conn.close()

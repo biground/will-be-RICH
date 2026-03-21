@@ -1,0 +1,409 @@
+"""
+策略市场 — 一键选择预设策略模板并运行回测
+"""
+
+import sys
+import os
+import time
+from datetime import date, timedelta
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+import ui_utils
+import storage
+from strategy_templates import STRATEGY_TEMPLATES, get_risk_badge_html
+from metrics_translator import (
+    translate_metric,
+    get_strategy_grade_summary,
+    get_risk_warning,
+    signal_card_html,
+    traffic_light_card_html,
+)
+
+st.set_page_config(page_title="策略市场", page_icon=None, layout="wide")
+ui_utils.render_nav("market")
+st.markdown(ui_utils.section_header("策略市场", "选择适合你的策略，一键回测"), unsafe_allow_html=True)
+
+
+# ============================================================
+# 侧边栏：简化参数
+# ============================================================
+COMMON_ETFS = {
+    "510300": "沪深300ETF",
+    "510500": "中证500ETF",
+    "159915": "创业板ETF",
+    "588000": "科创50ETF",
+    "510880": "红利ETF",
+    "518880": "黄金ETF",
+}
+
+with st.sidebar:
+    st.header("⚙️ 回测设置")
+
+    etf_mode = st.radio("标的选择", ["常用ETF", "自定义代码"], horizontal=True, key="_mkt_etf_mode")
+    if etf_mode == "常用ETF":
+        etf_code = st.selectbox(
+            "选择 ETF",
+            options=list(COMMON_ETFS.keys()),
+            format_func=lambda x: f"{x} — {COMMON_ETFS[x]}",
+            key="_mkt_etf_select",
+        )
+        etf_name = COMMON_ETFS[etf_code]
+    else:
+        etf_code = st.text_input("ETF 代码", value="510300", key="_mkt_etf_code")
+        etf_name = st.text_input("ETF 名称", value="沪深300ETF", key="_mkt_etf_name")
+
+    st.markdown("---")
+    st.subheader("📅 回测区间")
+    start_date = st.date_input("起始日期", value=date(2020, 1, 1), key="_mkt_start")
+    end_date = st.date_input("结束日期", value=date.today(), key="_mkt_end")
+
+    with st.expander("🔧 高级设置", expanded=False):
+        init_cash = st.number_input("初始资金 (元)", value=100000, step=10000, key="_mkt_cash")
+        commission = st.number_input("佣金 (%)", value=0.02, step=0.01, format="%.2f", key="_mkt_comm")
+        slippage = st.number_input("滑点 (%)", value=0.10, step=0.01, format="%.2f", key="_mkt_slip")
+        stamp_tax = st.number_input("印花税 (%)", value=0.05, step=0.01, format="%.2f", key="_mkt_tax")
+
+
+# ============================================================
+# 策略卡片展示
+# ============================================================
+st.markdown("### 📋 选择一个策略")
+st.caption("每个策略都是专业量化投资者常用的经典方法，已预设最优参数。选择后一键运行回测。")
+
+# 用 2 列布局
+num_templates = len(STRATEGY_TEMPLATES)
+for row_start in range(0, num_templates, 2):
+    cols = st.columns(2, gap="medium")
+    for col_idx, t_idx in enumerate(range(row_start, min(row_start + 2, num_templates))):
+        t = STRATEGY_TEMPLATES[t_idx]
+        with cols[col_idx]:
+            st.markdown(f"""
+<div class="strategy-card">
+  <div class="s-icon">{t['icon']}</div>
+  <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.3rem;">
+    <span class="s-name">{t['name']}</span>
+    <span class="s-tag" style="background:{t['risk_color']};">{t['risk_level']}</span>
+  </div>
+  <div class="s-one-liner">{t['one_liner']}</div>
+  <div class="s-detail">
+    <strong>指标</strong>：{', '.join(t['indicators'])}<br>
+    <strong>适合</strong>：{t['suitable_market']}<br>
+    <span style="color:#10B981;">✓ {t['pros']}</span><br>
+    <span style="color:#EF4444;">✗ {t['cons']}</span>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+            if st.button(f"使用「{t['name']}」", key=f"use_{t['id']}", use_container_width=True):
+                st.session_state["_selected_template"] = t["id"]
+
+
+# ============================================================
+# 运行回测
+# ============================================================
+selected_id = st.session_state.get("_selected_template")
+
+if selected_id:
+    template = None
+    for t in STRATEGY_TEMPLATES:
+        if t["id"] == selected_id:
+            template = t
+            break
+
+    if template is None:
+        st.error("未找到策略模板")
+        st.stop()
+
+    st.markdown("---")
+    st.markdown(ui_utils.section_header(f"正在运行：{template['name']}", template['one_liner']),
+                unsafe_allow_html=True)
+
+    # 参数汇总
+    col_p1, col_p2, col_p3, col_p4 = st.columns(4)
+    col_p1.metric("📌 标的", f"{etf_code} {etf_name}")
+    col_p2.metric("📅 区间", f"{start_date} ~ {end_date}")
+    col_p3.metric("💰 资金", f"¥{init_cash:,.0f}")
+    col_p4.metric("📊 策略", template["name"])
+
+    # 进度条
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+
+    try:
+        # Step 1: 获取数据
+        status_text.text("📡 正在获取行情数据...")
+        progress_bar.progress(10)
+
+        import akshare as ak
+
+        cache_dir = os.path.join(ROOT, "data", "cache")
+        os.makedirs(cache_dir, exist_ok=True)
+
+        start_str = start_date.strftime("%Y%m%d")
+        end_str = end_date.strftime("%Y%m%d")
+
+        # 清理代理（直连模式）
+        saved_env = {}
+        for var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+                    "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"):
+            saved_env[var] = os.environ.pop(var, "")
+        os.environ["NO_PROXY"] = "*"
+        os.environ["no_proxy"] = "*"
+
+        etf_df = None
+        try:
+            try:
+                raw = ak.fund_etf_hist_em(
+                    symbol=etf_code, period="daily",
+                    start_date=start_str, end_date=end_str, adjust="qfq",
+                )
+                col_map = {"日期": "date", "开盘": "open", "收盘": "close",
+                            "最高": "high", "最低": "low", "成交量": "volume", "成交额": "amount"}
+                raw = raw.rename(columns=col_map)
+                raw["date"] = pd.to_datetime(raw["date"])
+                raw = raw.set_index("date").sort_index()
+                data_cols = [c for c in ["open", "high", "low", "close", "volume", "amount"] if c in raw.columns]
+                etf_df = raw[data_cols].astype(float)
+            except Exception:
+                pass
+
+            if etf_df is None or etf_df.empty:
+                try:
+                    raw = ak.index_zh_a_hist(
+                        symbol=etf_code, period="daily",
+                        start_date=start_str, end_date=end_str,
+                    )
+                    col_map = {"日期": "date", "开盘": "open", "收盘": "close",
+                                "最高": "high", "最低": "low", "成交量": "volume", "成交额": "amount"}
+                    raw = raw.rename(columns=col_map)
+                    raw["date"] = pd.to_datetime(raw["date"])
+                    raw = raw.set_index("date").sort_index()
+                    data_cols = [c for c in ["open", "high", "low", "close", "volume", "amount"] if c in raw.columns]
+                    etf_df = raw[data_cols].astype(float)
+                except Exception:
+                    pass
+        finally:
+            for var, val in saved_env.items():
+                if val:
+                    os.environ[var] = val
+                else:
+                    os.environ.pop(var, None)
+
+        if etf_df is None or etf_df.empty:
+            st.error(f"⚠️ 无法获取 {etf_code} 的数据，请检查代码或网络。")
+            st.stop()
+
+        progress_bar.progress(30)
+        status_text.text("🔬 正在计算指标信号...")
+
+        # Step 2: 生成指标信号
+        from indicators import get_all_indicators
+        all_signals = get_all_indicators(etf_df)
+
+        # 查找匹配模板的信号
+        target_name = template["indicator_name"]
+        matched_entries = None
+        matched_exits = None
+
+        for entries, exits, name in all_signals:
+            if name == target_name:
+                matched_entries = entries
+                matched_exits = exits
+                break
+
+        if matched_entries is None:
+            st.error(f"⚠️ 未找到指标 {target_name} 的信号，请检查策略配置。")
+            st.stop()
+
+        progress_bar.progress(50)
+        status_text.text("🔄 正在运行回测...")
+
+        # Step 3: 运行回测
+        from engine.backtester import run_single_backtest
+        from engine.metrics import calculate_core_metrics, calculate_aux_metrics, calculate_benchmark_metrics
+
+        entry_fees = (slippage + commission) / 100
+        exit_fees = (slippage + commission + stamp_tax) / 100
+
+        pf = run_single_backtest(
+            close=etf_df["close"],
+            entries=matched_entries,
+            exits=matched_exits,
+            init_cash=init_cash,
+            entry_fees=entry_fees,
+            exit_fees=exit_fees,
+        )
+
+        progress_bar.progress(70)
+        status_text.text("📊 正在计算指标...")
+
+        # Step 4: 计算指标
+        core = calculate_core_metrics(pf, template["name"])
+        aux = calculate_aux_metrics(pf)
+        bench_metrics = calculate_benchmark_metrics(etf_df["close"])
+
+        progress_bar.progress(90)
+        status_text.text("✅ 回测完成！")
+        progress_bar.progress(100)
+
+        # ---- 结果展示（简单模式）----
+        st.markdown("---")
+
+        # 策略评级
+        from engine.metrics import calculate_strategy_grade
+        grade_info = calculate_strategy_grade(core, aux, bench_metrics)
+        grade = grade_info.get("grade", "C")
+        score = grade_info.get("score", 50)
+
+        annual_return = core.get("年化收益率", 0)
+        max_drawdown = core.get("最大回撤", 0)
+        win_rate = core.get("胜率", 0)
+
+        summary_text = get_strategy_grade_summary(grade, score, annual_return, max_drawdown)
+        st.markdown(summary_text)
+
+        risk_text = get_risk_warning(max_drawdown, init_cash)
+        st.info(risk_text)
+
+        # 三大核心指标（红绿灯）
+        t_ret = translate_metric("年化收益率", annual_return)
+        t_dd = translate_metric("最大回撤", max_drawdown)
+        t_wr = translate_metric("胜率", win_rate)
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown(traffic_light_card_html(
+                t_ret["label"], t_ret["value"], t_ret["level"], t_ret["color"], t_ret["explanation"]
+            ), unsafe_allow_html=True)
+        with c2:
+            st.markdown(traffic_light_card_html(
+                t_dd["label"], t_dd["value"], t_dd["level"], t_dd["color"], t_dd["explanation"]
+            ), unsafe_allow_html=True)
+        with c3:
+            st.markdown(traffic_light_card_html(
+                t_wr["label"], t_wr["value"], t_wr["level"], t_wr["color"], t_wr["explanation"]
+            ), unsafe_allow_html=True)
+
+        # 更多指标（折叠）
+        with st.expander("📊 查看更多指标", expanded=False):
+            sharpe = core.get("夏普比率", 0)
+            calmar = core.get("卡玛比率", 0)
+            plr = core.get("盈亏比", 0)
+            trades = core.get("交易次数", 0)
+            profit_factor = aux.get("盈利因子", 0)
+            sortino = core.get("索提诺比率", 0)
+
+            from metrics_translator import translate_metric as tm
+            extras = [
+                tm("夏普比率", sharpe),
+                tm("卡玛比率", calmar),
+                tm("盈亏比", plr),
+                tm("索提诺比率", sortino),
+                tm("盈利因子", profit_factor),
+                tm("交易次数", trades),
+            ]
+            ex_cols = st.columns(3)
+            for i, ex in enumerate(extras):
+                with ex_cols[i % 3]:
+                    st.markdown(traffic_light_card_html(
+                        ex["label"], ex["value"], ex["level"], ex["color"], ex["explanation"]
+                    ), unsafe_allow_html=True)
+
+        # 简化净值曲线
+        with st.expander("📈 净值曲线", expanded=True):
+            import plotly.graph_objects as go
+            equity = pf.value()
+            equity_norm = equity / equity.iloc[0] * 100
+            bench_norm = etf_df["close"] / etf_df["close"].iloc[0] * 100
+
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=equity_norm.index, y=equity_norm.values,
+                name=f"策略: {template['name']}",
+                line=dict(color="#6366F1", width=2),
+            ))
+            fig.add_trace(go.Scatter(
+                x=bench_norm.index, y=bench_norm.values,
+                name="买入持有（基准）",
+                line=dict(color="#9CA3AF", width=1.5, dash="dot"),
+            ))
+            fig.update_layout(
+                title="净值走势（基准 100）",
+                xaxis_title="日期",
+                yaxis_title="净值",
+                template="plotly_white",
+                height=400,
+                legend=dict(orientation="h", y=1.02, x=0.5, xanchor="center"),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        # 操作建议
+        st.markdown("---")
+        st.markdown("### 💡 操作建议")
+
+        # 获取当前信号
+        from signal_interpreter import get_current_signals, get_consensus_signal
+        current_signals = get_current_signals(etf_df)
+        # 只看与模板匹配的指标
+        matched_signal = None
+        for s in current_signals:
+            if s["name"] == target_name:
+                matched_signal = s
+                break
+
+        if matched_signal:
+            action_map = {"买入": "买入", "卖出": "卖出", "持有": "观望"}
+            action = action_map.get(matched_signal["signal"], "观望")
+            st.markdown(signal_card_html(
+                action, matched_signal["strength"],
+                f"基于 {template['name']} 策略，{matched_signal['description']}"
+            ), unsafe_allow_html=True)
+        else:
+            st.info("暂无当前信号数据")
+
+        st.caption("⚠️ 以上信号基于历史数据分析，不构成投资建议。市场有风险，投资需谨慎。")
+
+        # 保存结果到数据库
+        try:
+            storage.init_db()
+            run_id = storage.create_run(
+                etf_symbol=etf_code,
+                etf_name=etf_name,
+                benchmark_symbol=etf_code,
+                start_date=start_str,
+                end_date=end_str,
+                data_freq="daily",
+                init_cash=init_cash,
+                entry_fees=entry_fees,
+                exit_fees=exit_fees,
+                notes=f"策略市场 - {template['name']}",
+            )
+            storage.update_run_status(run_id, "completed", 0)
+        except Exception:
+            pass
+
+        # 关注此策略按钮
+        st.markdown("---")
+        _strat_name = template.get("name", "")
+        if _strat_name and not storage.is_in_watchlist(etf_code, _strat_name):
+            if st.button(f"⭐ 关注策略「{_strat_name}」— {etf_name}（{etf_code}）", type="primary", key="_mkt_watch"):
+                storage.add_to_watchlist(etf_code, etf_name, strategy_name=_strat_name, run_id=run_id)
+                st.success(f"已关注 {etf_name}（{etf_code}）的策略「{_strat_name}」！回到首页即可查看。")
+        elif _strat_name:
+            st.success(f"⭐ 已关注：{etf_name}（{etf_code}）「{_strat_name}」")
+        elif not storage.is_in_watchlist(etf_code):
+            if st.button(f"⭐ 关注 {etf_name}（{etf_code}）— 在首页查看信号", type="primary", key="_mkt_watch_etf"):
+                storage.add_to_watchlist(etf_code, etf_name, run_id=run_id)
+                st.success(f"已将 {etf_name}（{etf_code}）加入关注列表！")
+
+    except Exception as e:
+        st.error(f"回测运行失败：{e}")
+        import traceback
+        with st.expander("查看详细错误"):
+            st.code(traceback.format_exc())

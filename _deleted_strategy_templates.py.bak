@@ -1,0 +1,132 @@
+"""
+策略模板系统 — 预设面向散户的一键回测策略
+
+每个模板封装好指标组合 + 默认参数 + 风险等级 + 通俗描述，
+用户无需理解技术细节即可运行回测。
+"""
+
+# ------------------------------------------------------------------
+# 策略模板定义
+# ------------------------------------------------------------------
+STRATEGY_TEMPLATES = [
+    {
+        "id": "trend_ma_cross",
+        "name": "均线趋势跟踪",
+        "icon": "📈",
+        "risk_level": "稳健",
+        "risk_color": "#F59E0B",
+        "one_liner": "跟着大趋势走，大涨时在车上，大跌前下车",
+        "description": (
+            "当 20 日短期均线上穿 60 日长期均线时买入（金叉），"
+            "下穿时卖出（死叉）。这是最经典的趋势跟踪策略，"
+            "适合牛市和单边上涨行情。"
+        ),
+        "suitable_market": "上升趋势",
+        "indicators": ["MA(20,60)"],
+        "indicator_type": "single",
+        "indicator_name": "MA(20,60)",
+        "pros": "逻辑简单易懂，大行情不会踏空",
+        "cons": "震荡市容易来回止损（假信号多）",
+    },
+    {
+        "id": "trend_ema_fast",
+        "name": "EMA 快速趋势",
+        "icon": "⚡",
+        "risk_level": "激进",
+        "risk_color": "#EF4444",
+        "one_liner": "反应更灵敏的趋势策略，比普通均线更早进出",
+        "description": (
+            "使用指数移动平均线（EMA 10/60），EMA 对近期价格更敏感，"
+            "能更快捕捉趋势变化。适合对入场时机要求较高的投资者。"
+        ),
+        "suitable_market": "上升趋势",
+        "indicators": ["EMA(10,60)"],
+        "indicator_type": "single",
+        "indicator_name": "EMA(10,60)",
+        "pros": "信号比 MA 更灵敏，入场更早",
+        "cons": "假信号也会更多，需要更好的纪律性",
+    },
+    {
+        "id": "macd_momentum",
+        "name": "MACD 动量策略",
+        "icon": "🔄",
+        "risk_level": "稳健",
+        "risk_color": "#F59E0B",
+        "one_liner": "捕捉价格动量变化，多空力量转换时交易",
+        "description": (
+            "MACD 柱状图从负变正时买入（动量转多），"
+            "从正变负时卖出。MACD 综合了趋势和动量两个维度，"
+            "在中长线投资中表现稳健。"
+        ),
+        "suitable_market": "上升趋势",
+        "indicators": ["MACD(12,26,9)"],
+        "indicator_type": "single",
+        "indicator_name": "MACD(12,26,9)",
+        "pros": "指标成熟稳定，假信号相对少",
+        "cons": "信号略滞后，不适合快速变盘的极端行情",
+    },
+    {
+        "id": "supertrend",
+        "name": "超级趋势",
+        "icon": "🚀",
+        "risk_level": "激进",
+        "risk_color": "#EF4444",
+        "one_liner": "自适应趋势通道，突破即进场",
+        "description": (
+            "SuperTrend 指标基于 ATR（真实波幅）构建动态通道，"
+            "价格突破通道上沿时买入，跌破下沿时卖出。"
+            "通道宽度随波动率自动调整，能适应不同市场环境。"
+        ),
+        "suitable_market": "上升趋势",
+        "indicators": ["SuperTrend(10,3.0)"],
+        "indicator_type": "single",
+        "indicator_name": "SuperTrend(10,3.0)",
+        "pros": "自适应市场波动，趋势明确时表现出色",
+        "cons": "参数敏感度较高，横盘时可能频繁交易",
+    },
+    {
+        "id": "bollinger_revert",
+        "name": "布林带突破",
+        "icon": "📊",
+        "risk_level": "保守",
+        "risk_color": "#10B981",
+        "one_liner": "价格碰到下轨买入，碰到上轨卖出",
+        "description": (
+            "布林带由均线和上下两条标准差通道组成。"
+            "价格触及下轨（被低估）时买入，触及上轨（被高估）时卖出。"
+            "适合震荡市中的低买高卖。"
+        ),
+        "suitable_market": "震荡市",
+        "indicators": ["Bollinger(20,2.0)"],
+        "indicator_type": "single",
+        "indicator_name": "Bollinger(20,2.0)",
+        "pros": "交易次数适中，风险控制较好",
+        "cons": "趋势强劲时可能过早卖出（错失后续涨幅）",
+    },
+]
+
+
+# ------------------------------------------------------------------
+# 工具函数
+# ------------------------------------------------------------------
+def get_template_by_id(template_id: str) -> dict | None:
+    """根据 ID 获取策略模板"""
+    for t in STRATEGY_TEMPLATES:
+        if t["id"] == template_id:
+            return t
+    return None
+
+
+def get_all_templates() -> list[dict]:
+    """获取所有策略模板"""
+    return STRATEGY_TEMPLATES
+
+
+def get_risk_badge_html(risk_level: str, risk_color: str) -> str:
+    """返回风险等级徽章的 HTML"""
+    return (
+        f'<span style="display:inline-block;background:{risk_color};'
+        f'color:#fff;font-size:0.72rem;font-weight:600;'
+        f'padding:0.15rem 0.55rem;border-radius:99px;">'
+        f'{risk_level}</span>'
+    )

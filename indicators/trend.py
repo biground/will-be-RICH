@@ -113,14 +113,14 @@ def bollinger_signals(df: pd.DataFrame) -> list[tuple]:
     """布林带: 价格触下轨买入，触上轨卖出"""
     p = INDICATOR_PARAMS["bollinger"]
     bb = ta.bbands(df["close"], length=p["period"], std=p["std"])
-    # pandas_ta bbands: BBL, BBM, BBU, BBB, BBP
-    bbl_col = f"BBL_{p['period']}_{p['std']}"
-    bbu_col = f"BBU_{p['period']}_{p['std']}"
+    # pandas_ta bbands: BBL, BBM, BBU, BBB, BBP (column names vary by version)
+    bbl_col = [c for c in bb.columns if c.startswith("BBL")][0]
+    bbu_col = [c for c in bb.columns if c.startswith("BBU")][0]
     lower = bb[bbl_col]
     upper = bb[bbu_col]
 
-    entries = (df["close"] <= lower) & (df["close"].shift(1) > lower.shift(1))
-    exits = (df["close"] >= upper) & (df["close"].shift(1) < upper.shift(1))
+    entries = df["close"] <= lower
+    exits = df["close"] >= upper
     entries = entries.fillna(False)
     exits = exits.fillna(False)
     return [(entries, exits, f"Bollinger({p['period']},{p['std']})")]

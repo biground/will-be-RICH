@@ -28,12 +28,6 @@ if ROOT not in sys.path:
 import storage
 import ui_utils
 
-# ---- 频率映射 ----
-_FREQ_MAP = {
-    "15": "15分钟", "30": "30分钟",
-    "daily": "日线", "weekly": "周线", "monthly": "月线",
-}
-
 # ---- 历史参数预填充（必须在所有 sidebar 控件渲染前执行）----
 _apply = st.session_state.pop("_params_to_apply", None)
 if _apply:
@@ -42,7 +36,7 @@ if _apply:
 
 st.set_page_config(page_title="新建回测", page_icon=None, layout="wide")
 ui_utils.render_nav("backtest")
-st.markdown(ui_utils.section_header("新建回测", "完整三阶段回测引擎"), unsafe_allow_html=True)
+st.markdown(ui_utils.section_header("新建回测"), unsafe_allow_html=True)
 
 # ============================================================
 # 常用 ETF 列表
@@ -199,46 +193,30 @@ else:
     benchmark_symbol = etf_symbol  # 指数模式下基准与标的相同
     is_index_mode = True
 
-# 数据频率（放在日期之前，以便根据频率自动调整日期范围）
-st.sidebar.subheader("⏱️ 数据频率")
-data_freq = st.sidebar.selectbox(
-    "K线频率", ["15", "30", "daily", "weekly", "monthly"], index=2,
-    format_func=lambda x: _FREQ_MAP[x],
-    key="_sb_data_freq",
-    help=(
-        "**15分钟 / 30分钟**：分钟级K线，适合短线与日内趋势策略。⚠️ 分钟数据通常仅保留近6个月。\n\n"
-        "**日线**：每个交易日产生一条信号，交易更频繁，对短期趋势敏感，但手续费摩擦较高。\n\n"
-        "**周线**：每周产生一条信号，交易次数少，适合中长期趋势策略，手续费损耗更低，信号更稳定。\n\n"
-        "**月线**：每月产生一条信号，适合长周期趋势判断，信号最少但最稳定。"
-    ),
-)
-
-# 时间范围（根据频率自动设置默认日期）
-from datetime import date, datetime
-from dateutil.relativedelta import relativedelta
-_is_minute_freq = data_freq in ("15", "30")
-_default_start = (date.today() - relativedelta(months=6)) if _is_minute_freq else date(2018, 1, 1)
-_default_end = date.today() if _is_minute_freq else date(2023, 12, 31)
-
-# 检测频率切换，主动覆盖日期（Streamlit key缓存不会自动更新value）
-_prev_freq = st.session_state.get("_prev_data_freq")
-if _prev_freq is not None and _prev_freq != data_freq:
-    st.session_state["_sb_start_date"] = _default_start
-    st.session_state["_sb_end_date"] = _default_end
-st.session_state["_prev_data_freq"] = data_freq
-
+# 时间范围
 st.sidebar.subheader("📅 回测周期")
-if _is_minute_freq:
-    st.sidebar.info("ℹ️ 分钟级数据源通常仅提供最近 6 个月，已自动调整日期范围。")
 col_s, col_e = st.sidebar.columns(2)
+from datetime import date, datetime
 with col_s:
-    start_date = st.date_input("起始日期", value=_default_start, min_value=date(2005, 1, 1),
+    start_date = st.date_input("起始日期", value=date(2018, 1, 1), min_value=date(2005, 1, 1),
         key="_sb_start_date",
         help="回测的起始时间。建议至少覆盖一个完整牛熊市周期（3~5年），周期越长结果越有统计意义。")
 with col_e:
-    end_date = st.date_input("结束日期", value=_default_end, max_value=date(2026, 12, 31),
+    end_date = st.date_input("结束日期", value=date(2023, 12, 31), max_value=date(2026, 12, 31),
         key="_sb_end_date",
         help="回测的结束时间。历史回测结果不代表未来实际收益，仅供参考。")
+
+# 数据频率
+st.sidebar.subheader("⏱️ 数据频率")
+data_freq = st.sidebar.selectbox(
+    "K线频率", ["daily", "weekly"], index=0,
+    format_func=lambda x: {"daily": "日线", "weekly": "周线"}[x],
+    key="_sb_data_freq",
+    help=(
+        "**日线**：每个交易日产生一条信号，交易更频繁，对短期趋势敏感，但手续费摩擦较高。\n\n"
+        "**周线**：每周产生一条信号，交易次数少，适合中长期趋势策略，手续费损耗更低，信号更稳定。"
+    ),
+)
 
 # 资金与费率
 st.sidebar.subheader("💰 资金与费率")
@@ -291,6 +269,15 @@ data_adjust = st.sidebar.selectbox(
 
 # 阶段二参数
 st.sidebar.subheader("⚙️ 筛选阈值")
+phase3_mode = st.sidebar.radio(
+    "阶段三优化目标", ["自动（夏普最高）", "手动选择"],
+    horizontal=True, key="_sb_phase3_mode",
+    help=(
+        "**自动**：一键完成全部三阶段，自动对夏普比率最高的策略进行参数优化。\n\n"
+        "**手动选择**：先完成阶段一、二，然后从所有候选策略中自选一个进行阶段三参数优化。"
+        "适合你对某个特定策略感兴趣，而非仅看夏普排名。"
+    ),
+)
 phase2_top_n = st.sidebar.slider(
     "阶段二: 取TOP N组合", 3, 20, 10, key="_sb_phase2_top_n",
     help=(
@@ -360,8 +347,7 @@ def _apply_proxy(proxy_url):
     proxy_url=str   → 使用指定代理
     返回 saved dict 供还原。
     """
-    import urllib.request as _ureq
-    saved = {"_orig_getproxies": _ureq.getproxies}
+    saved = {}
     for var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
                 "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"):
         saved[var] = os.environ.pop(var, "")
@@ -375,14 +361,10 @@ def _apply_proxy(proxy_url):
         # 直连：显式告知 requests/urllib3 对所有 host 跳过系统代理
         os.environ["NO_PROXY"] = "*"
         os.environ["no_proxy"] = "*"
-        # 同时 monkey-patch getproxies 确保 Windows 注册表代理也被绕过
-        _ureq.getproxies = lambda: {"no": "*"}
     return saved
 
 
 def _restore_proxy(saved):
-    import urllib.request as _ureq
-    _ureq.getproxies = saved.pop("_orig_getproxies", _ureq.getproxies)
     for var, val in saved.items():
         if val:
             os.environ[var] = val
@@ -391,8 +373,7 @@ def _restore_proxy(saved):
 
 
 def _standardize_cols(df):
-    col_map = {"日期": "date", "时间": "date", "day": "date",
-               "开盘": "open", "收盘": "close",
+    col_map = {"日期": "date", "开盘": "open", "收盘": "close",
                "最高": "high", "最低": "low", "成交量": "volume", "成交额": "amount"}
     df = df.rename(columns=col_map)
     if "date" in df.columns:
@@ -411,40 +392,10 @@ def _find_any_cache(cache_dir, sym, suffix):
     return files[0] if files else None
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
-def _get_valid_etf_codes():
-    """获取当前所有有效的 ETF 代码集合（1小时缓存）"""
-    try:
-        import akshare as ak
-        df = ak.fund_etf_fund_daily_em()
-        return set(df["基金代码"].tolist())
-    except Exception:
-        return set()   # 网络不可用时跳过验证
-
-
-def _validate_etf_code(symbol):
-    """验证 ETF 代码是否存在，返回 (is_valid, message)"""
-    valid_codes = _get_valid_etf_codes()
-    if not valid_codes:
-        return True, ""  # 无法获取列表时放行
-    if symbol in valid_codes:
-        return True, ""
-    # 模糊推荐
-    similar = sorted([c for c in valid_codes if c[:4] == symbol[:4]])[:5]
-    hint = f"相似代码: {', '.join(similar)}" if similar else "请核实后重试"
-    return False, f"ETF 代码 {symbol} 不存在。{hint}"
-
-
 def fetch_data_dynamic(etf_sym, bench_sym, start, end, adjust, freq,
                        is_index=False, proxy_url=None):
     """动态获取数据，支持ETF/指数双模式、代理配置与宽松缓存复用"""
     import akshare as ak
-
-    # ETF 模式下先验证代码有效性
-    if not is_index:
-        ok, msg = _validate_etf_code(etf_sym)
-        if not ok:
-            raise ValueError(msg)
 
     cache_dir = os.path.join(ROOT, "data", "cache")
     os.makedirs(cache_dir, exist_ok=True)
@@ -454,22 +405,19 @@ def fetch_data_dynamic(etf_sym, bench_sym, start, end, adjust, freq,
     start_dt = pd.Timestamp(start)
     end_dt = pd.Timestamp(end)
 
-    # 缓存后缀包含频率
-    _freq_tag = f"_{freq}" if freq not in ("daily",) else ""
-
     # ---- 主标的数据 ----
     if is_index:
         # 指数模式：直接获取指数行情，缓存标记为 _index
-        main_cache = os.path.join(cache_dir, f"{etf_sym}_{start_str}_{end_str}{_freq_tag}_index.csv")
+        main_cache = os.path.join(cache_dir, f"{etf_sym}_{start_str}_{end_str}_index.csv")
         main_df = _fetch_index_df(etf_sym, start_str, end_str, start_dt, end_dt,
-                                   main_cache, cache_dir, ak, proxy_url, freq=freq)
+                                   main_cache, cache_dir, ak, proxy_url)
     else:
         # ETF模式
-        main_cache = os.path.join(cache_dir, f"{etf_sym}_{start_str}_{end_str}{_freq_tag}_{adjust}.csv")
+        main_cache = os.path.join(cache_dir, f"{etf_sym}_{start_str}_{end_str}_{adjust}.csv")
         if os.path.exists(main_cache):
             main_df = pd.read_csv(main_cache, index_col="date", parse_dates=True)
         else:
-            any_cache = _find_any_cache(cache_dir, etf_sym, f"_{adjust}") if freq == "daily" else None
+            any_cache = _find_any_cache(cache_dir, etf_sym, f"_{adjust}")
             if any_cache:
                 tmp = pd.read_csv(any_cache, index_col="date", parse_dates=True)
                 sliced = tmp.loc[start_dt:end_dt]
@@ -485,122 +433,67 @@ def fetch_data_dynamic(etf_sym, bench_sym, start, end, adjust, freq,
 
     main_df = main_df.loc[start_dt:end_dt]
 
-    # 分钟数据源数据量有限，若截取后为空则使用全部可用数据
-    _is_minute = freq in ("15", "30")
-    if _is_minute and main_df.empty:
-        if is_index:
-            main_df = _fetch_index_df(etf_sym, start_str, end_str, start_dt, end_dt,
-                                       main_cache, cache_dir, ak, proxy_url, freq=freq)
-        else:
-            main_df = _fetch_etf_df(etf_sym, start_str, end_str, start_dt, end_dt,
-                                    adjust, freq, main_cache, ak, proxy_url)
-        if main_df is not None and not main_df.empty:
-            st.warning(f"⚠️ 分钟数据实际范围：{main_df.index.min().date()} ~ {main_df.index.max().date()}，"
-                       f"与所选日期范围不一致，已自动使用全部可用数据。")
-
     # ---- 基准数据 ----
     if is_index:
         # 指数模式下基准=标的本身，直接复用
         bench_df = main_df.copy()
     else:
-        # 基准始终用日线（指数基准不需要分钟级别）
-        _bench_freq = "daily" if freq in ("15", "30") else freq
         bench_df = _fetch_index_df(bench_sym, start_str, end_str, start_dt, end_dt,
                                     os.path.join(cache_dir, f"{bench_sym}_{start_str}_{end_str}_index.csv"),
-                                    cache_dir, ak, proxy_url, freq=_bench_freq)
+                                    cache_dir, ak, proxy_url)
         # 若基准实在获取不到，用主标的近似
         if bench_df is None or bench_df.empty:
             bench_df = main_df.copy()
 
     bench_df = bench_df.loc[start_dt:end_dt]
 
-    # 基准数据也可能因日期范围不匹配而为空
-    if bench_df.empty and not main_df.empty:
-        bench_df = main_df.copy()
-
     # 对齐索引
-    _is_minute = freq in ("15", "30")
-    if _is_minute and not main_df.empty and not bench_df.empty:
-        # 分钟数据与日线基准的时间戳精度不同，需要将日线基准前向填充到分钟索引
-        # 将日线基准的日期索引归一化，然后按分钟索引的日期部分进行映射
-        bench_daily = bench_df.copy()
-        bench_daily.index = bench_daily.index.normalize()
-        # 合并分钟索引，用日线的值前向填充
-        combined_idx = main_df.index.union(bench_daily.index).sort_values()
-        bench_reindexed = bench_daily.reindex(combined_idx, method="ffill")
-        bench_df = bench_reindexed.reindex(main_df.index)
-        bench_df = bench_df.dropna(subset=["close"] if "close" in bench_df.columns else bench_df.columns[:1])
-        common_idx = main_df.index.intersection(bench_df.index)
-    else:
-        common_idx = main_df.index.intersection(bench_df.index)
+    common_idx = main_df.index.intersection(bench_df.index)
     return main_df.loc[common_idx], bench_df.loc[common_idx]
 
 
 def _fetch_etf_df(symbol, start_str, end_str, start_dt, end_dt,
                   adjust, freq, cache_path, ak, proxy_url):
     """获取ETF数据，多方法 fallback + 代理→直连双模式重试"""
-    is_minute = freq in ("15", "30")
-    if is_minute:
-        period = freq  # "15" or "30"
-    elif freq == "monthly":
-        period = "monthly"
-    elif freq == "weekly":
-        period = "weekly"
-    else:
-        period = "daily"
+    period = "daily" if freq == "daily" else "weekly"
 
     def _try_etf_one_mode(conn_mode):
         result = None
         saved = _apply_proxy(conn_mode)
         try:
-            # 方法1: 新浪分钟接口（不走 push2his，网络兼容性最好）
-            if is_minute:
-                for _prefix in ["sh", "sz"]:
-                    try:
-                        raw = ak.stock_zh_a_minute(
-                            symbol=f"{_prefix}{symbol}", period=period, adjust=adjust,
-                        )
-                        if raw is not None and len(raw) > 0:
-                            result = _standardize_cols(raw)
-                            break
-                    except Exception:
-                        pass
+            # 方法1: fund_etf_hist_em（东方财富ETF专用接口，最常用）
+            try:
+                raw = ak.fund_etf_hist_em(
+                    symbol=symbol, period=period,
+                    start_date=start_str, end_date=end_str, adjust=adjust,
+                )
+                if raw is not None and len(raw) > 0:
+                    result = _standardize_cols(raw)
+            except Exception:
+                pass
 
-            # 方法2: Sina ETF日线接口（不走 push2his）
-            if result is None and not is_minute:
-                for _prefix in ["sh", "sz"]:
+            # 方法2: fund_etf_hist_sina（新浪ETF接口）
+            if result is None:
+                try:
+                    raw = ak.fund_etf_hist_sina(symbol=f"sz{symbol}")
+                    if raw is not None and len(raw) > 0:
+                        df = _standardize_cols(raw).loc[start_dt:end_dt]
+                        if len(df) > 20:
+                            result = df
+                except Exception:
+                    pass
+                if result is None:
                     try:
-                        raw = ak.fund_etf_hist_sina(symbol=f"{_prefix}{symbol}")
+                        raw = ak.fund_etf_hist_sina(symbol=f"sh{symbol}")
                         if raw is not None and len(raw) > 0:
                             df = _standardize_cols(raw).loc[start_dt:end_dt]
                             if len(df) > 20:
                                 result = df
-                                break
                     except Exception:
                         pass
 
-            # 方法3: 东方财富ETF接口（数据最全，但依赖 push2his.eastmoney.com）
+            # 方法3: 当A股通用接口（部分ETF也可通过此接口获取）
             if result is None:
-                try:
-                    if is_minute:
-                        _sd = start_dt.strftime("%Y-%m-%d") + " 09:00:00"
-                        _ed = end_dt.strftime("%Y-%m-%d") + " 16:00:00"
-                        raw = ak.fund_etf_hist_min_em(
-                            symbol=symbol, period=period,
-                            start_date=_sd, end_date=_ed, adjust=adjust,
-                        )
-                    else:
-                        raw = ak.fund_etf_hist_em(
-                            symbol=symbol, period=period,
-                            start_date=start_str, end_date=end_str, adjust=adjust,
-                        )
-                    if raw is not None and len(raw) > 0:
-                        result = _standardize_cols(raw)
-                except Exception:
-                    pass
-
-            # 方法4: A股通用接口（仅日/周/月）
-            if result is None and not is_minute:
                 for market in ["sh", "sz"]:
                     try:
                         raw = ak.stock_zh_a_hist(
@@ -613,8 +506,8 @@ def _fetch_etf_df(symbol, start_str, end_str, start_dt, end_dt,
                     except Exception:
                         pass
 
-            # 方法5: 腾讯日线（不支持复权但可兜底，仅日线级别）
-            if result is None and not is_minute:
+            # 方法4: 腾讯日线（不支持复权但可兜底）
+            if result is None:
                 for prefix in ["sh", "sz"]:
                     try:
                         raw = ak.stock_zh_index_daily_tx(symbol=f"{prefix}{symbol}")
@@ -629,96 +522,34 @@ def _fetch_etf_df(symbol, start_str, end_str, start_dt, end_dt,
             _restore_proxy(saved)
         return result
 
-    # 优先使用用户配置的模式；若失败则自动尝试所有备选连接方式
-    _FALLBACK_PORTS = [12334, 7890, 10809]
-    modes_to_try = [proxy_url]
-    if proxy_url is not None:
-        modes_to_try.append(None)  # 直连
-    else:
-        for _p in _FALLBACK_PORTS:
-            modes_to_try.append(f"http://127.0.0.1:{_p}")
-
-    df = None
-    _errors = []
-    for _mode in modes_to_try:
-        try:
-            df = _try_etf_one_mode(_mode)
-            if df is not None and len(df) > 0:
-                break
-        except Exception as _e:
-            _errors.append(f"{_mode or '直连'}: {_e}")
-        df = None
+    # 优先使用用户配置的代理；若失败则直连重试
+    df = _try_etf_one_mode(proxy_url)
+    if (df is None or len(df) == 0) and proxy_url is not None:
+        df = _try_etf_one_mode(None)
 
     if df is not None and not df.empty:
         df.to_csv(cache_path)
         return df
-
-    # 分钟级数据获取失败时，尝试降级到日线（Sina 源）
-    if is_minute:
-        _fallback_errors = []
-        for _mode in modes_to_try:
-            saved = _apply_proxy(_mode)
-            try:
-                for _prefix in ["sh", "sz"]:
-                    try:
-                        raw = ak.fund_etf_hist_sina(symbol=f"{_prefix}{symbol}")
-                        if raw is not None and len(raw) > 0:
-                            df = _standardize_cols(raw).loc[start_dt:end_dt]
-                            if len(df) > 20:
-                                import streamlit as _st_warn
-                                _st_warn.warning(
-                                    f"⚠️ {freq}分钟数据源不可用（push2his.eastmoney.com 被网络拦截），"
-                                    f"已自动降级为**日线数据**。如需分钟级回测，请修复网络后重试。"
-                                )
-                                df.to_csv(cache_path)
-                                return df
-                    except Exception:
-                        pass
-            except Exception as _e:
-                _fallback_errors.append(str(_e))
-            finally:
-                _restore_proxy(saved)
-
-    err_detail = "; ".join(_errors) if _errors else "所有数据源返回空数据"
-    # 检查是否为代理问题
-    proxy_hint = ""
-    try:
-        import urllib.request
-        sys_proxy = urllib.request.getproxies()
-        if any(v for v in sys_proxy.values()):
-            proxy_hint = (
-                f"\n⚠️ 检测到系统代理: {sys_proxy}。"
-                "\n如果使用 Clash/V2Ray 等代理，请确认 push2his.eastmoney.com 未被拦截，"
-                "或尝试关闭 TUN 模式。"
-            )
-    except Exception:
-        pass
     raise RuntimeError(
-        f"ETF {symbol} 数据获取失败，所有数据源均不可用。\n"
-        f"已尝试连接方式: {[m or '直连' for m in modes_to_try]}\n"
-        f"详细错误: {err_detail}{proxy_hint}\n"
-        f"💡 主要原因：push2his.eastmoney.com（东方财富K线数据）在您的网络下不通。\n"
-        f"建议：1) 尝试更换网络 2) 关闭代理/VPN 的 TUN 模式 3) 配置代理规则放行该域名"
+        f"ETF {symbol} 数据获取失败，所有数据源均不可用。"
+        "请检查代码是否正确、网络是否通畅，或尝试切换代理/直连模式。"
     )
 
 
 def _fetch_index_df(symbol, start_str, end_str, start_dt, end_dt,
-                    cache_path, cache_dir, ak, proxy_url, freq="daily"):
+                    cache_path, cache_dir, ak, proxy_url):
     """获取指数数据，带缓存复用、多方法fallback、代理→直连双模式重试"""
     if os.path.exists(cache_path):
         return pd.read_csv(cache_path, index_col="date", parse_dates=True)
 
-    is_minute = freq in ("15", "30")
-
-    # 复用宽松缓存（仅日线级别）
-    if not is_minute:
-        any_cache = _find_any_cache(cache_dir, symbol, "_index")
-        if any_cache and any_cache != cache_path:
-            tmp = pd.read_csv(any_cache, index_col="date", parse_dates=True)
-            sliced = tmp.loc[start_dt:end_dt]
-            if len(sliced) > 20:
-                sliced.to_csv(cache_path)
-                return sliced
+    # 复用宽松缓存
+    any_cache = _find_any_cache(cache_dir, symbol, "_index")
+    if any_cache and any_cache != cache_path:
+        tmp = pd.read_csv(any_cache, index_col="date", parse_dates=True)
+        sliced = tmp.loc[start_dt:end_dt]
+        if len(sliced) > 20:
+            sliced.to_csv(cache_path)
+            return sliced
 
     def _standardize_csindex(raw):
         """处理 stock_zh_index_hist_csindex 的特殊列名（成交金额≠成交额）"""
@@ -734,42 +565,10 @@ def _fetch_index_df(symbol, start_str, end_str, start_dt, end_dt,
                 if c in df.columns]
         return df[cols].astype(float)
 
-    # 确定 index_zh_a_hist 的 period 参数
-    _idx_period = "monthly" if freq == "monthly" else ("weekly" if freq == "weekly" else "daily")
-
     def _try_one_mode(conn_mode):
         result = None
         saved = _apply_proxy(conn_mode)
         try:
-            # --- 分钟级别 fallback 链 ---
-            if is_minute:
-                # 方法A: 新浪分钟接口（不走 push2his，最可靠）
-                for _prefix in ["sh", "sz"]:
-                    try:
-                        raw = ak.stock_zh_a_minute(
-                            symbol=f"{_prefix}{symbol}", period=freq,
-                        )
-                        if raw is not None and len(raw) > 0:
-                            result = _standardize_cols(raw)
-                            break
-                    except Exception:
-                        pass
-                # 方法B: 东方财富分钟接口（依赖 push2his）
-                if result is None:
-                    try:
-                        _sd = start_dt.strftime("%Y-%m-%d") + " 09:00:00"
-                        _ed = end_dt.strftime("%Y-%m-%d") + " 16:00:00"
-                        raw = ak.index_zh_a_hist_min_em(
-                            symbol=symbol, period=freq,
-                            start_date=_sd, end_date=_ed,
-                        )
-                        if raw is not None and len(raw) > 0:
-                            result = _standardize_cols(raw)
-                    except Exception:
-                        pass
-                return result  # 分钟级别到此结束
-
-            # --- 日/周/月级别 fallback 链 ---
             # 方法1: 腾讯源 sh 前缀（最可靠，2007-今，代理/直连均可）
             try:
                 raw = ak.stock_zh_index_daily_tx(symbol=f"sh{symbol}")
@@ -829,7 +628,7 @@ def _fetch_index_df(symbol, start_str, end_str, start_dt, end_dt,
             # 方法6: 东方财富 index_zh_a_hist
             if result is None:
                 try:
-                    raw = ak.index_zh_a_hist(symbol=symbol, period=_idx_period,
+                    raw = ak.index_zh_a_hist(symbol=symbol, period="daily",
                                              start_date=start_str, end_date=end_str)
                     if raw is not None and len(raw) > 0:
                         result = _standardize_cols(raw)
@@ -852,24 +651,10 @@ def _fetch_index_df(symbol, start_str, end_str, start_dt, end_dt,
             _restore_proxy(saved)
         return result
 
-    # 优先使用用户配置的模式；若失败则自动尝试所有备选连接方式
-    _FALLBACK_PORTS = [12334, 7890, 10809]
-    modes_to_try = [proxy_url]
-    if proxy_url is not None:
-        modes_to_try.append(None)  # 直连
-    else:
-        for _p in _FALLBACK_PORTS:
-            modes_to_try.append(f"http://127.0.0.1:{_p}")
-
-    df = None
-    for _mode in modes_to_try:
-        try:
-            df = _try_one_mode(_mode)
-            if df is not None and len(df) > 0:
-                break
-        except Exception:
-            pass
-        df = None
+    # 优先使用用户配置的代理；若全部失败则自动回退直连
+    df = _try_one_mode(proxy_url)
+    if (df is None or len(df) == 0) and proxy_url is not None:
+        df = _try_one_mode(None)  # 直连重试
 
     if df is not None and not df.empty:
         df.to_csv(cache_path)
@@ -894,9 +679,6 @@ def run_full_backtest(etf_df, benchmark_df, progress_bar, status_text,
     close = etf_df["close"]
     bench_close = benchmark_df["close"]
     results = {}
-
-    if close.empty or bench_close.empty:
-        raise ValueError("数据为空，无法执行回测。请检查ETF代码和日期范围。")
 
     # --- 基准 ---
     status_text.text("计算基准指标...")
@@ -1166,9 +948,10 @@ col1, col2, col3, col4 = st.columns(4)
 col1.metric("目标ETF", f"{etf_symbol} ({etf_name})")
 col2.metric("回测区间", f"{start_date} ~ {end_date}")
 col3.metric("初始资金", f"¥{init_cash:,.0f}")
-col4.metric("数据频率", _FREQ_MAP[data_freq])
+col4.metric("数据频率", {"daily": "日线", "weekly": "周线"}[data_freq])
 
-# 运行按钮（始终只运行阶段一 & 二，阶段三在策略报告中触发）
+# 运行按钮
+_is_manual_phase3 = (phase3_mode == "手动选择")
 
 def _run_and_save(phase3_override=None):
     """执行回测流程并保存结果到数据库"""
@@ -1210,11 +993,6 @@ def _run_and_save(phase3_override=None):
         mode_label = "指数" if is_index_mode else "ETF"
         st.info(f"数据加载完成: {mode_label} {len(etf_df)} 条 | 基准 {len(benchmark_df)} 条")
 
-        if etf_df.empty or benchmark_df.empty:
-            st.error("❌ 数据为空，无法回测。请检查代码是否正确、日期范围是否在数据源覆盖范围内。")
-            storage.update_run_status(run_id, "failed", 0)
-            return
-
         # 执行回测
         results = run_full_backtest(etf_df, benchmark_df, progress_bar, status_text,
                                     phase3_override=phase3_override)
@@ -1238,10 +1016,6 @@ def _run_and_save(phase3_override=None):
         storage.update_run_status(run_id, "completed", elapsed)
 
         st.success(f"✅ 回测完成！耗时 {elapsed:.1f} 秒 | 运行ID: #{run_id}")
-
-        # 将 run_id 保存到 session_state，用于自动跳转到策略报告
-        st.session_state["current_run_id"] = run_id
-
         return results, run_id, benchmark_df
 
     except Exception as e:
@@ -1253,50 +1027,10 @@ def _run_and_save(phase3_override=None):
 
 
 # ============================================================
-# OTP 邮件验证（防止他人乱刷）— 通过浏览器 Cookie 持久化
+# OTP 邮件验证（防止他人乱刷）
 # ============================================================
 _OTP_TTL = 300           # 验证码有效期（秒）
 _OTP_MAX_ATTEMPTS = 5    # 最大尝试次数
-_OTP_COOKIE_NAME = "otp_auth"
-_OTP_COOKIE_MAX_AGE = 86400 * 30  # Cookie 有效期 30 天
-
-import hashlib, hmac as _hmac
-import streamlit.components.v1 as _components
-
-def _get_otp_secret() -> str:
-    """从 secrets 获取 HMAC 密钥，无则使用默认"""
-    try:
-        return str(st.secrets.get("smtp", {}).get("password", "will-be-RICH-default-key"))
-    except Exception:
-        return "will-be-RICH-default-key"
-
-def _make_otp_token() -> str:
-    """生成 HMAC 签名的验证 token"""
-    secret = _get_otp_secret()
-    payload = "otp_verified"
-    return _hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
-
-def _verify_otp_token(token: str) -> bool:
-    """验证 token 是否合法"""
-    if not token:
-        return False
-    expected = _make_otp_token()
-    return _hmac.compare_digest(token, expected)
-
-def _read_auth_cookie() -> str:
-    """通过 st.context.cookies 服务端读取浏览器 Cookie（无 JS 时序问题）"""
-    try:
-        return st.context.cookies.get(_OTP_COOKIE_NAME, "")
-    except Exception:
-        return ""
-
-def _set_auth_cookie(token: str):
-    """通过 JS 注入在浏览器主页面设置 Cookie（不可见，height=0）"""
-    js = (
-        f'<script>parent.document.cookie='
-        f'"{_OTP_COOKIE_NAME}={token};path=/;max-age={_OTP_COOKIE_MAX_AGE};SameSite=Lax";</script>'
-    )
-    _components.html(js, height=0)
 
 
 def _generate_otp() -> str:
@@ -1338,31 +1072,16 @@ def _send_otp_email(otp: str) -> bool:
 def _otp_gate() -> bool:
     """
     OTP 门控 UI。
-    - 浏览器 Cookie 含合法 token → 静默返回 True
-    - Session 已验证 → 静默返回 True
+    - 已验证 → 静默返回 True
     - 未验证 → 渲染验证 UI，返回 False（调用方应接着调用 st.stop()）
     """
     if st.session_state.get("_otp_verified"):
         return True
 
-    # 通过 st.context.cookies 服务端读 Cookie（每次请求都可靠）
-    auth_cookie = _read_auth_cookie()
-    if auth_cookie and _verify_otp_token(auth_cookie):
-        st.session_state["_otp_verified"] = True
-        return True
-
-    # 兼容旧的 URL query_params 方式（平滑迁移）
-    auth_token = st.query_params.get("auth", "")
-    if auth_token and _verify_otp_token(auth_token):
-        st.session_state["_otp_verified"] = True
-        _set_auth_cookie(auth_token)  # 迁移到 Cookie
-        st.query_params.clear()       # 清理 URL
-        return True
-
     st.markdown(ui_utils.section_header("运行回测需要身份验证"), unsafe_allow_html=True)
     st.caption(
         "为防止他人滥用后台资源，每次会话首次运行回测需要通过邮件验证码确认身份。"
-        "验证成功后同一浏览器无需再次验证（有效期 30 天）。"
+        "验证码将发送到绑定邮箱，**本次会话只需验证一次**（关闭标签页后重置）。"
     )
 
     expiry = st.session_state.get("_otp_expiry", 0.0)
@@ -1400,10 +1119,7 @@ def _otp_gate() -> bool:
                     st.error("⚠️ 验证码已过期，请重新发送。")
                 elif entered == st.session_state.get("_otp_code", "~~INVALID~~"):
                     st.session_state["_otp_verified"] = True
-                    # 将 token 写入浏览器 Cookie，同一浏览器 30 天内无需再验证
-                    _set_auth_cookie(_make_otp_token())
                     st.success("✅ 验证成功！页面即将刷新…")
-                    time.sleep(0.5)  # 给 JS 时间写入 Cookie
                     st.rerun()
                 else:
                     st.session_state["_otp_attempts"] = attempts + 1
@@ -1418,14 +1134,58 @@ def _otp_gate() -> bool:
 if not _otp_gate():
     st.stop()
 
-# ---- 运行阶段一 & 二（阶段三在「策略报告」页面触发）----
-if st.button("🚀 开始回测（阶段一 & 二）", type="primary", use_container_width=True):
-    ret = _run_and_save(phase3_override="__SKIP__")
-    if ret[0] is not None:
-        results, run_id, benchmark_df = ret
-        # 回测完成，缓存 portfolios 到 session_state 供采用策略时使用
-        st.session_state["_backtest_results"] = results
-        st.session_state["_backtest_run_id"] = run_id
-        st.session_state["current_run_id"] = run_id
-        # 自动跳转到策略报告
-        st.switch_page("pages/2_策略报告.py")
+# ---- 手动选择模式：先看阶段一二，再选策略进行阶段三 ----
+if _is_manual_phase3:
+    col_btn1, col_btn2 = st.columns(2)
+    with col_btn1:
+        btn_phase12 = st.button("🚀 运行阶段一 & 二", type="primary", use_container_width=True)
+    with col_btn2:
+        btn_phase3 = st.button("⚡ 继续阶段三", use_container_width=True,
+                                disabled=("_manual_candidates" not in st.session_state))
+
+    # 候选策略选择器（仅在阶段一二完成后显示）
+    if "_manual_candidates" in st.session_state:
+        selected_strategy = st.selectbox(
+            "选择要优化的策略",
+            st.session_state["_manual_candidates"],
+            help="从阶段一（单指标）和阶段二（组合策略）的结果中选择一个策略进行阶段三参数优化。",
+        )
+    else:
+        selected_strategy = None
+
+    if btn_phase12:
+        # 只运行阶段一+二（phase3_override="__SKIP__" 表示跳过阶段三）
+        ret = _run_and_save(phase3_override="__SKIP__")
+        if ret[0] is not None:
+            results = ret[0]
+            # 构建候选策略列表
+            candidates = []
+            p1 = results.get("phase1_df", pd.DataFrame())
+            p2 = results.get("phase2_df", pd.DataFrame())
+            if not p1.empty:
+                candidates += p1.head(15)["指标名称"].tolist()
+            if not p2.empty:
+                for _, r in p2.head(15).iterrows():
+                    cname = r.get("指标组合", r.get("指标名称", ""))
+                    logic = r.get("逻辑", "")
+                    candidates.append(f"{cname} [{logic}]" if logic else cname)
+            st.session_state["_manual_candidates"] = candidates
+            st.session_state["_manual_run_id"] = ret[1]
+            st.rerun()
+
+    if btn_phase3 and selected_strategy:
+        ret = _run_and_save(phase3_override=selected_strategy)
+        if ret[0] is not None:
+            results, run_id, benchmark_df = ret
+            # 清理临时状态
+            st.session_state.pop("_manual_candidates", None)
+            st.session_state.pop("_manual_run_id", None)
+            _show_backtest_results(results, benchmark_df)
+
+else:
+    # ---- 自动模式：一键完成全部三阶段 ----
+    if st.button("🚀 开始回测", type="primary", use_container_width=True):
+        ret = _run_and_save()
+        if ret[0] is not None:
+            results, run_id, benchmark_df = ret
+            _show_backtest_results(results, benchmark_df)

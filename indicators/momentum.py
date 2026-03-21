@@ -18,8 +18,8 @@ def rsi_signals(df: pd.DataFrame) -> list[tuple]:
     for period in INDICATOR_PARAMS["rsi_periods"]:
         rsi = ta.rsi(close, length=period)
         # 从超卖区向上穿越买入，从超买区向下穿越卖出
-        entries = (rsi < buy_thresh) & (rsi.shift(1) >= buy_thresh)
-        exits = (rsi > sell_thresh) & (rsi.shift(1) <= sell_thresh)
+        entries = (rsi > buy_thresh) & (rsi.shift(1) <= buy_thresh)
+        exits = (rsi < sell_thresh) & (rsi.shift(1) >= sell_thresh)
         entries = entries.fillna(False)
         exits = exits.fillna(False)
         results.append((entries, exits, f"RSI({period})"))

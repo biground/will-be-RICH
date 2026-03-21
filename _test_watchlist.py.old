@@ -1,0 +1,31 @@
+import storage
+storage.init_db()
+print("DB init OK")
+
+# Test strategy-level watchlist
+storage.add_to_watchlist("510300", "沪深300ETF", strategy_name="MA均线交叉", run_id=1)
+storage.add_to_watchlist("510300", "沪深300ETF", strategy_name="MACD动量", run_id=2)
+storage.add_to_watchlist("510500", "中证500ETF")
+print("Added 3 items")
+
+wl = storage.get_watchlist()
+print(wl[["etf_symbol", "etf_name", "strategy_name", "run_id"]].to_string())
+
+# Check
+print("510300+MA:", storage.is_in_watchlist("510300", "MA均线交叉"))
+print("510300+RSI:", storage.is_in_watchlist("510300", "RSI"))
+print("510300 any:", storage.is_in_watchlist("510300"))
+print("510500 any:", storage.is_in_watchlist("510500"))
+
+# Remove one strategy
+storage.remove_from_watchlist("510300", "MA均线交叉")
+print("Removed 510300+MA")
+print("510300+MA:", storage.is_in_watchlist("510300", "MA均线交叉"))
+print("510300+MACD:", storage.is_in_watchlist("510300", "MACD动量"))
+
+# Clean up
+storage.remove_from_watchlist("510300")
+storage.remove_from_watchlist("510500")
+print("Cleaned up")
+wl2 = storage.get_watchlist()
+print(f"Remaining: {len(wl2)}")

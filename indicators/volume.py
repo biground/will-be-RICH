@@ -97,6 +97,8 @@ def vroc_signals(df: pd.DataFrame) -> list[tuple]:
 
 def get_all_volume_signals(df: pd.DataFrame) -> list[tuple]:
     """汇总所有成交量类指标信号"""
+    if "volume" not in df.columns:
+        return []
     all_signals = []
     all_signals.extend(vwap_signals(df))
     all_signals.extend(obv_signals(df))

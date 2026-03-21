@@ -17,33 +17,11 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 import storage
+import ui_utils
 
-st.set_page_config(page_title="查看结果", page_icon="📊", layout="wide")
-st.markdown("""
-<style>
-div[data-testid="stAppViewContainer"] > div:first-child { padding-top: 3.2rem; }
-.fixed-nav {
-    position: fixed; top: 0; left: 0; right: 0; z-index: 999;
-    background: linear-gradient(135deg, #1f77b4 0%, #2196F3 100%);
-    display: flex; justify-content: center; gap: 0; padding: 0;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-}
-.fixed-nav a {
-    color: rgba(255,255,255,0.85); text-decoration: none;
-    padding: 0.65rem 2rem; font-size: 0.95rem; font-weight: 500;
-    transition: all 0.2s; border-bottom: 3px solid transparent;
-}
-.fixed-nav a:hover { color: #fff; background: rgba(255,255,255,0.1); }
-.fixed-nav a.active { color: #fff; border-bottom: 3px solid #fff; background: rgba(255,255,255,0.15); }
-</style>
-<div class="fixed-nav">
-    <a href="/" target="_self">🏠 首页</a>
-    <a href="/新建回测" target="_self">🚀 新建回测</a>
-    <a href="/查看结果" target="_self" class="active">📊 查看结果</a>
-    <a href="/历史记录" target="_self">📚 历史记录</a>
-</div>
-""", unsafe_allow_html=True)
-st.header("📊 查看结果")
+st.set_page_config(page_title="查看结果", page_icon=None, layout="wide")
+ui_utils.render_nav("results")
+st.markdown(ui_utils.section_header("查看结果"), unsafe_allow_html=True)
 
 # 获取所有运行记录
 runs_df = storage.list_runs()
@@ -71,7 +49,7 @@ if not run_info:
     st.stop()
 
 # 运行概要
-st.markdown("### 运行概要")
+st.markdown(ui_utils.section_header("运行概要"), unsafe_allow_html=True)
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("ETF", f"{run_info['etf_symbol']}")
 c2.metric("区间", f"{run_info['start_date']}~{run_info['end_date']}")
@@ -93,7 +71,7 @@ with tab1:
     if p1.empty:
         st.info("无阶段一数据")
     else:
-        st.subheader(f"单指标测试 ({len(p1)} 个策略)")
+        st.markdown(ui_utils.section_header(f"单指标测试 ({len(p1)} 个策略)"), unsafe_allow_html=True)
 
         # 散点图
         fig = px.scatter(
@@ -149,7 +127,7 @@ with tab2:
     if p2.empty:
         st.info("无阶段二数据")
     else:
-        st.subheader(f"组合策略测试 ({len(p2)} 个组合)")
+        st.markdown(ui_utils.section_header(f"组合策略测试 ({len(p2)} 个组合)"), unsafe_allow_html=True)
 
         # 按逻辑分组对比
         fig = px.scatter(
@@ -186,7 +164,7 @@ with tab3:
     if p3.empty:
         st.info("无阶段三数据")
     else:
-        st.subheader(f"参数优化结果 ({len(p3)} 组参数组合)")
+        st.markdown(ui_utils.section_header(f"参数优化结果 ({len(p3)} 组参数组合)"), unsafe_allow_html=True)
         st.info(
             "**阶段三做了什么？** 系统对最优策略的核心参数（如均线周期、RSI阈值等）进行±20%范围的网格扫描，"
             "测试每组参数下的策略表现，帮助你判断：①当前参数是否处于'甜蜜区'（改变参数后表现稳定）；"
@@ -258,7 +236,7 @@ with tab4:
     if not best:
         st.info("无最优策略数据")
     else:
-        st.subheader(f"⭐ 最优策略: {best['strategy_name']}")
+        st.markdown(ui_utils.section_header(f"最优策略: {best['strategy_name']}"), unsafe_allow_html=True)
 
         core = best.get("core_metrics", {})
         aux = best.get("aux_metrics", {})
